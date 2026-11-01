@@ -24,17 +24,37 @@ Recommended IDEs:
 ### macOS
 
 * Make sure [Homebrew](https://brew.sh) is installed
-* Install [CMake 3.25+](https://cmake.org)
+* Install the development tools from the repository root:
 
 ```sh
-brew install cmake
+brew bundle --file=Brewfile
+brew bundle check --file=Brewfile
 ```
 
-* Install Python 3
+The Brewfile maintains CMake, Ninja, Python, pkg-config, Rust's toolchain manager,
+and sccache. It is a dependency manifest, not a version lockfile. Use Apple Clang
+and SDKs supplied by Xcode.
+
+* Add Homebrew's keg-only Rust tools to your shell and install the desktop toolchain:
 
 ```sh
-brew install python@3
+export PATH="$(brew --prefix rustup)/bin:$PATH"
+rustup toolchain install stable
 ```
+
+For Apple TV builds, install full Xcode with the tvOS platform components and
+the Rust target used by `tvos-default`:
+
+```sh
+sudo xcode-select --switch /Applications/Xcode.app/Contents/Developer
+xcrun --sdk appletvos --show-sdk-path
+rustup toolchain install nightly
+rustup target add --toolchain nightly aarch64-apple-tvos
+```
+
+The tvOS preset is experimental; its CI matrix entry is currently disabled.
+Device pairing, signing, game-file transfer, and persistent saves still need
+device validation. The Brewfile does not configure those steps.
 
 Recommended IDEs:
 

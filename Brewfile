@@ -1,0 +1,6 @@
+brew "cmake"
+brew "ninja"
+brew "pkgconf"
+brew "python"
+brew "rustup"
+brew "sccache"
