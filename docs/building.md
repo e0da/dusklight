@@ -71,7 +71,6 @@ cmake --build --preset tvos-default
 
 This produces a build, not a provisioned installation. Full Xcode must have a
 developer account and a tvOS development profile for the chosen bundle identifier.
-For live inspection and control, see [live-debug.md](live-debug.md).
 
 Recommended IDEs:
 
