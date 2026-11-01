@@ -1,4 +1,5 @@
 #include "commands.hpp"
+#include "channel_context.hpp"
 
 #include "game_clock.h"
 
@@ -284,6 +285,18 @@ void runCommand(std::string_view cmdLine, CommandState& state, const CommandOutp
         return;
     }
     const auto& cmd = args[0];
+
+    if (cmd == "channel") {
+        if (args.size() == 1) {
+            output(channels::status_json());
+        } else if (args.size() == 2) {
+            std::string error;
+            output(channels::request(args[1], error) ? "Channel transition scheduled" : error);
+        } else {
+            output("Usage: channel [name]");
+        }
+        return;
+    }
 
     auto requirePlayer = [&]() -> daAlink_c* {
         auto* p = (daAlink_c*)dComIfGp_getPlayer(0);

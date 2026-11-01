@@ -8,18 +8,18 @@ struct IconError: Error, CustomStringConvertible {
 
 let arguments = Array(CommandLine.arguments.dropFirst())
 guard arguments.count == 4, arguments[0] == "--channel",
-      ["trunk", "dev"].contains(arguments[1]), arguments[2] == "--output" else {
-    fputs("Usage: swift tools/tvos_icons.swift --channel trunk|dev --output DIR\n", stderr)
+      ["play", "lab"].contains(arguments[1]), arguments[2] == "--output" else {
+    fputs("Usage: swift tools/tvos_icons.swift --channel play|lab --output DIR\n", stderr)
     exit(2)
 }
 let channel = arguments[1]
 let output = URL(fileURLWithPath: arguments[3], isDirectory: true)
 let fileManager = FileManager.default
 let canvas = CGRect(x: 0, y: 0, width: 1280, height: 768)
-let isDev = channel == "dev"
-let accent = isDev ? NSColor(srgbRed: 0.38, green: 0.96, blue: 1, alpha: 1)
+let isLab = channel == "lab"
+let accent = isLab ? NSColor(srgbRed: 0.38, green: 0.96, blue: 1, alpha: 1)
                    : NSColor(srgbRed: 1, green: 0.79, blue: 0.36, alpha: 1)
-let background = isDev ? NSColor(srgbRed: 0.15, green: 0.05, blue: 0.28, alpha: 1)
+let background = isLab ? NSColor(srgbRed: 0.15, green: 0.05, blue: 0.28, alpha: 1)
                        : NSColor(srgbRed: 0.025, green: 0.07, blue: 0.16, alpha: 1)
 let metadata: [String: Any] = ["info": ["author": "xcode", "version": 1]]
 

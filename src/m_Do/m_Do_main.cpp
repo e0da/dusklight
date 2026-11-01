@@ -40,6 +40,7 @@
 #include "dusk/audio/DuskAudioSystem.h"
 #include "dusk/audio/DuskDsp.hpp"
 #include "dusk/commands.hpp"
+#include "dusk/channel_context.hpp"
 #include "dusk/config.hpp"
 #include "dusk/data.hpp"
 #include "dusk/discord_presence.hpp"
@@ -154,9 +155,7 @@ AuroraInfo auroraInfo;
 
 bool launchUILoop() {
     while (dusk::IsRunning && !dusk::IsGameLaunched) {
-#if DUSK_ENABLE_LIVE_DEBUG
-        dusk::live_debug::poll(false);
-#endif
+        dusk::channels::poll(false);
         const AuroraEvent* event = aurora_update();
         while (event != nullptr && event->type != AURORA_NONE) {
             switch (event->type) {
@@ -279,9 +278,7 @@ void main01(void) {
 
         eventsDone:;
 
-#if DUSK_ENABLE_LIVE_DEBUG
-        dusk::live_debug::poll(true);
-#endif
+        dusk::channels::poll(true);
         if (!aurora_begin_frame()) {
             DuskLog.debug("aurora_begin_frame returned false, skipping draw this frame");
             continue;
@@ -574,6 +571,7 @@ int game_main(int argc, char* argv[]) {
             ("h,help", "Print usage")
             ("dvd", "Path to DVD image file", cxxopts::value<std::string>())
             ("mods", "Path to mods directory", cxxopts::value<std::string>())
+            ("channel", "Runtime channel context (catalog default when unspecified)", cxxopts::value<std::string>())
             ("backend", "Graphics API backend to use (auto, d3d12, d3d11, metal, vulkan, null)", cxxopts::value<std::string>())
             ("cvar", "Override configuration variables without modifying config", cxxopts::value<std::vector<std::string>>())
             ("develop", "Enable the game's developer mode and OSReport for debugging", cxxopts::value<bool>()->default_value("false")->implicit_value("true"))
@@ -655,6 +653,13 @@ int game_main(int argc, char* argv[]) {
 
     dusk::config::load_from_user_preferences();
     ApplyCVarOverrides(parsed_arg_options["cvar"]);
+    try {
+        dusk::channels::initialize(parsed_arg_options.count("channel") ?
+            parsed_arg_options["channel"].as<std::string>() : "");
+    } catch (const std::exception& error) {
+        DuskLog.error("Cannot initialize channel context: {}", error.what());
+        return 1;
+    }
     borealis::sentry::Options sentryOptions{
         .release = fmt::format("{}@{}", dusk::AppInfo.appName, BOREALIS_APP_DESCRIBE),
         .databaseDirectory = dusk::CachePath / "sentry",
@@ -720,9 +725,6 @@ int game_main(int argc, char* argv[]) {
         config.pauseOnFocusLost = dusk::getSettings().game.pauseOnFocusLost;
         config.imGuiInitCallback = &aurora_imgui_init_callback;
         config.allowTextureDumps = false;
-#if defined(__APPLE__) && TARGET_OS_TV
-        SDL_SetHint(SDL_HINT_TV_REMOTE_AS_JOYSTICK, "0");
-#endif
         auroraInfo = aurora_initialize(argc, argv, &config);
     }
 
@@ -772,9 +774,7 @@ int game_main(int argc, char* argv[]) {
 
     dusk::texture_replacements::reload();
     dusk::ui::initialize();
-#if DUSK_ENABLE_LIVE_DEBUG
-    dusk::live_debug::initialize();
-#endif
+    dusk::channels::activate_runtime();
     dusk::ui::apply_scale();
     dusk::ui::push_document(std::make_unique<dusk::ui::Overlay>(), true, true);
     dusk::ui::push_document(std::make_unique<dusk::ui::TouchControls>(), false, true);
@@ -885,9 +885,7 @@ int game_main(int argc, char* argv[]) {
 
             // pre game launch ui main loop
             if (!launchUILoop()) {
-#if DUSK_ENABLE_LIVE_DEBUG
-                dusk::live_debug::shutdown();
-#endif
+                dusk::channels::shutdown();
                 borealis::shutdown();
                 borealis::sentry::shutdown();
                 borealis::log::shutdown();
@@ -980,9 +978,7 @@ int game_main(int argc, char* argv[]) {
     OSReport("Starting main01 (Game Loop)...\n");
 
     main01();
-#if DUSK_ENABLE_LIVE_DEBUG
-    dusk::live_debug::shutdown();
-#endif
+    dusk::channels::shutdown();
     borealis::shutdown();
 
     // We need to cleanly shut down the threads to avoid crashes on shutdown.

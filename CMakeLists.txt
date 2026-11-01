@@ -84,6 +84,19 @@ target_compile_definitions(aurora_mtx PRIVATE MTX_USE_PS=1)
 
 add_subdirectory(extern/borealis EXCLUDE_FROM_ALL)
 
+if (NOT COMMAND corrosion_import_crate)
+    include(FetchContent)
+    FetchContent_Declare(Corrosion
+        GIT_REPOSITORY https://github.com/corrosion-rs/corrosion.git
+        GIT_TAG v0.6.1)
+    FetchContent_MakeAvailable(Corrosion)
+endif ()
+corrosion_import_crate(MANIFEST_PATH "${CMAKE_CURRENT_SOURCE_DIR}/libs/channel_context/Cargo.toml"
+    CRATES channel_context CRATE_TYPES staticlib)
+set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/config/channels.json")
+file(READ "${CMAKE_CURRENT_SOURCE_DIR}/config/channels.json" DUSK_CHANNEL_CATALOG_JSON)
+configure_file(cmake/channel_catalog.hpp.in generated/channel_catalog.hpp @ONLY)
+
 add_subdirectory(libs/freeverb)
 
 if (CMAKE_BUILD_TYPE STREQUAL "Debug")
@@ -97,7 +110,7 @@ option(DUSK_SELECTED_OPT "If on, selected parts of the project will be compiled 
 option(DUSK_PACKAGE_INSTALL "Install Dusklight with a Linux-native file structure" OFF)
 option(DUSK_GFX_DEBUG_GROUPS "Report debug groups to the native graphics API" ${DUSK_GFX_DEBUG_GROUPS_DEFAULT})
 option(DUSK_ENABLE_CODE_MODS "Enable code mods" ON)
-option(DUSK_ENABLE_LIVE_DEBUG "Enable the opt-in development WebSocket bridge" OFF)
+option(DUSK_ENABLE_LIVE_DEBUG "Compile live-control capability; runtime channel controls activation" ON)
 option(DUSK_ENABLE_OPUS "Enable loading Opus audio files for mods" OFF)
 
 
@@ -287,6 +300,7 @@ list(APPEND GAME_COMPILE_DEFS DUSK_ENABLE_LIVE_DEBUG=$<BOOL:${DUSK_ENABLE_LIVE_D
 set(GAME_LIBS aurora::core aurora::gx aurora::gd aurora::si aurora::vi aurora::pad aurora::mtx aurora::os aurora::dvd aurora::thp
     aurora::card borealis::http borealis::cli borealis::crash borealis::data borealis::disc borealis::discord borealis::file_select borealis::io borealis::log borealis::net borealis::presentation borealis::sentry borealis::update borealis::ws freeverb cxxopts::cxxopts absl::flat_hash_map nlohmann_json::nlohmann_json TracyClient fmt::fmt
     Threads::Threads zstd::libzstd dusklight_game_headers picosha2 PNG::PNG)
+list(APPEND GAME_LIBS channel_context)
 if (DUSK_HAS_FUNCHOOK)
     list(APPEND GAME_LIBS funchook-static)
 endif ()
@@ -367,6 +381,9 @@ set(GAME_FILES ${_dusklight_all_files})
 list(FILTER GAME_FILES EXCLUDE REGEX "^src/dusk/")
 
 add_library(dusk_internal OBJECT ${DUSK_INTERNAL_FILES})
+target_sources(dusk_internal PRIVATE src/dusk/channel_context.cpp)
+target_include_directories(dusk_internal PRIVATE "${CMAKE_CURRENT_BINARY_DIR}/generated"
+    "${CMAKE_CURRENT_SOURCE_DIR}/libs/channel_context/include")
 if (DUSK_ENABLE_LIVE_DEBUG)
     target_sources(dusk_internal PRIVATE src/dusk/live_debug.cpp)
     if (NOT CMAKE_CROSSCOMPILING AND NOT WIN32)
@@ -611,6 +628,11 @@ if (APPLE)
             XCODE_ATTRIBUTE_ENABLE_HARDENED_RUNTIME "YES")
     endif ()
     set_target_properties(dusklight PROPERTIES ${_apple_bundle_properties})
+    add_custom_command(TARGET dusklight POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different
+            "${CMAKE_CURRENT_SOURCE_DIR}/config/channels.json"
+            "$<TARGET_BUNDLE_DIR:dusklight>/channel-catalog.json"
+        VERBATIM)
 
     if (CMAKE_SYSTEM_NAME STREQUAL "Darwin" AND NOT "${CMAKE_GENERATOR}" STREQUAL "Xcode")
         set(_sign_nested_commands)
