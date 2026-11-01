@@ -1,4 +1,3 @@
-import importlib.util
 import json
 from pathlib import Path
 import subprocess
@@ -6,11 +5,7 @@ import tempfile
 import unittest
 
 
-SPEC = importlib.util.spec_from_file_location(
-    "release_channels", Path(__file__).resolve().parents[1] / "tools/release_channels.py"
-)
-releases = importlib.util.module_from_spec(SPEC)
-SPEC.loader.exec_module(releases)
+from tools import release_channels as releases
 
 
 class ReleaseTests(unittest.TestCase):
@@ -24,9 +19,7 @@ class ReleaseTests(unittest.TestCase):
         self.write(releases.POINTERS, {
             "schemaVersion": 1, "channels": {"play": None, "lab": None},
         })
-        self.write(releases.CATALOG, {
-            "schemaVersion": 1, "channels": {"play": {}, "lab": {}},
-        })
+        self.write(releases.CATALOG, self.catalog("play", "lab"))
         self.commit = self.save("initial")
         self.tag = "midna/v1.2.3"
         self.git("tag", "-a", self.tag, "-m", "Selected release")
@@ -40,6 +33,21 @@ class ReleaseTests(unittest.TestCase):
         target = self.repo / path
         target.parent.mkdir(parents=True, exist_ok=True)
         target.write_text(json.dumps(value))
+
+    def catalog(self, *names):
+        return {"schemaVersion": 1, "defaultChannel": names[0], "collections": {},
+                "channels": {name: {} for name in names}}
+
+    def invalid_catalogs(self):
+        return [
+            '{"schemaVersion":1,"collections":{},"channels":{"play":{}}}',
+            '{"schemaVersion":1,"defaultChannel":"play","channels":{"play":{}}}',
+            '{"schemaVersion":1,"defaultChannel":"missing","collections":{},"channels":{"play":{}}}',
+            '{"schemaVersion":1,"defaultChannel":"play","collections":{},"channels":{"play":{"extends":["missing"]}}}',
+            '{"schemaVersion":1,"defaultChannel":"play","collections":{"a":{"extends":["b"]},"b":{"extends":["a"]}},"channels":{"play":{}}}',
+            '{"schemaVersion":1,"defaultChannel":"play","collections":{},"channels":{"play":{"features":{"enabled":true,"enabled":false}}}}',
+            '{"schemaVersion":1,',
+        ]
 
     def save(self, message):
         self.git("add", ".")
@@ -84,7 +92,7 @@ class ReleaseTests(unittest.TestCase):
 
     def test_promotion_is_selective_and_uses_release_catalog(self):
         record = self.prepare()
-        self.write(releases.CATALOG, {"schemaVersion": 1, "channels": {"other": {}}})
+        self.write(releases.CATALOG, self.catalog("other"))
         self.save("later catalog removes lab")
         selected = releases.promote(self.repo, "lab", self.tag)
         self.assertIsNone(selected["channels"]["play"])
@@ -94,20 +102,18 @@ class ReleaseTests(unittest.TestCase):
         self.assertEqual(selected, releases.promote(self.repo, "lab", self.tag))
 
     def test_channel_must_exist_at_tag_even_if_present_now(self):
-        self.write(releases.CATALOG, {"schemaVersion": 1, "channels": {"play": {}}})
+        self.write(releases.CATALOG, self.catalog("play"))
         self.commit = self.save("play only")
         self.tag = "midna/v2.0.0"
         self.git("tag", "-a", self.tag, "-m", "Play only")
         self.prepare()
-        self.write(releases.CATALOG, {"schemaVersion": 1, "channels": {"play": {}, "lab": {}}})
+        self.write(releases.CATALOG, self.catalog("play", "lab"))
         with self.assertRaises(ValueError):
             releases.promote(self.repo, "lab", self.tag)
         self.assertIsNone(releases.load_pointers(self.repo)["channels"]["lab"])
 
     def test_catalog_can_add_a_third_channel_through_cli(self):
-        self.write(releases.CATALOG, {
-            "schemaVersion": 1, "channels": {"play": {}, "lab": {}, "preview_2": {}},
-        })
+        self.write(releases.CATALOG, self.catalog("play", "lab", "preview_2"))
         self.commit = self.save("add preview channel")
         self.tag = "midna/v2.1.0"
         self.git("tag", "-a", self.tag, "-m", "Preview release")
@@ -124,6 +130,39 @@ class ReleaseTests(unittest.TestCase):
             key: record[key] for key in ("tag", "commit", "catalogBlobSha")
         })
         self.assertEqual(releases.load_pointers(self.repo)["channels"], pointers)
+
+    def test_prepare_rejects_unresolvable_catalog_before_writing_record(self):
+        before = (self.repo / releases.POINTERS).read_bytes()
+        for index, raw in enumerate(self.invalid_catalogs()):
+            with self.subTest(catalog=raw):
+                (self.repo / releases.CATALOG).write_text(raw)
+                commit = self.save("invalid catalog")
+                tag = f"midna/v4.0.{index}"
+                self.git("tag", tag)
+                with self.assertRaises(ValueError):
+                    releases.prepare(self.repo, tag, commit)
+                self.assertFalse(releases.record_path(self.repo, tag).exists())
+                self.assertEqual(before, (self.repo / releases.POINTERS).read_bytes())
+
+    def test_promote_revalidates_legacy_catalog_before_changing_pointers(self):
+        before = (self.repo / releases.POINTERS).read_bytes()
+        for index, raw in enumerate(self.invalid_catalogs()):
+            with self.subTest(catalog=raw):
+                (self.repo / releases.CATALOG).write_text(raw)
+                commit = self.save("invalid historic catalog")
+                tag = f"midna/v5.0.{index}"
+                self.git("tag", tag)
+                record = {
+                    "schemaVersion": 1, "tag": tag, "commit": commit,
+                    "tagObjectSha": self.git("rev-parse", f"refs/tags/{tag}"),
+                    "catalogPath": releases.CATALOG,
+                    "catalogBlobSha": self.git("rev-parse", f"{commit}:{releases.CATALOG}"),
+                    "artifactMetadata": {},
+                }
+                releases.atomic_json(releases.record_path(self.repo, tag), record)
+                with self.assertRaises(ValueError):
+                    releases.promote(self.repo, "play", tag)
+                self.assertEqual(before, (self.repo / releases.POINTERS).read_bytes())
 
     def test_unknown_or_unsafe_channel_cannot_change_pointers(self):
         self.prepare()

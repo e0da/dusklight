@@ -10,6 +10,11 @@ import subprocess
 import tempfile
 from urllib.parse import quote
 
+if __package__:
+    from . import channel_context
+else:
+    import channel_context
+
 
 CATALOG = "config/channels.json"
 POINTERS = "releases/channels.json"
@@ -64,13 +69,11 @@ def snapshot(repo, tag, commit):
         raise ValueError("tag does not resolve to the selected commit")
     blob = git(repo, "rev-parse", "--verify", f"{commit}:{CATALOG}")
     try:
-        catalog = json.loads(git(repo, "show", f"{commit}:{CATALOG}"))
+        catalog = json.loads(git(repo, "show", f"{commit}:{CATALOG}"),
+                             object_pairs_hook=channel_context.unique_object)
     except ValueError as error:
         raise ValueError("release catalog is missing or invalid JSON") from error
-    if (not isinstance(catalog, dict) or type(catalog.get("schemaVersion")) is not int
-            or catalog["schemaVersion"] != 1 or not isinstance(catalog.get("channels"), dict)):
-        raise ValueError("release catalog must have schemaVersion 1 and a channels object")
-    return tag_object, blob, catalog
+    return tag_object, blob, channel_context.resolve_catalog(catalog)
 
 
 def atomic_json(path, value, immutable=False):
