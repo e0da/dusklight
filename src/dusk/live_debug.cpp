@@ -10,6 +10,7 @@
 #include <borealis/ws.hpp>
 #include <nlohmann/json.hpp>
 
+#include <algorithm>
 #include <cmath>
 #include <cstdlib>
 #include <optional>
@@ -29,7 +30,9 @@ constexpr size_t kMaxOutputLines = 128;
 constexpr unsigned kMaxEventsPerFrame = 4;
 
 borealis::ws::Connection connection;
-std::optional<borealis::ws::Options> pendingConnection;
+std::optional<borealis::ws::Options> connectionOptions;
+uint64_t nextConnectNs = 0;
+unsigned retrySeconds = 1;
 CommandState commandState;
 unsigned subscriptionHz = 0;
 uint64_t sequence = 0;
@@ -46,6 +49,14 @@ void reset_session() {
     nextTelemetryNs = 0;
 }
 
+void schedule_retry(uint64_t now) {
+    connection.close(1000, "Session ended");
+    connection = {};
+    reset_session();
+    nextConnectNs = now + retrySeconds * 1'000'000'000ULL;
+    retrySeconds = std::min(retrySeconds * 2, 30u);
+}
+
 bool send_response(Json response) {
     const auto serialized = response.dump(-1, ' ', false, Json::error_handler_t::replace);
     if (serialized.size() <= kMaxMessageBytes && connection.send(borealis::ws::MessageKind::Text,
@@ -54,7 +65,7 @@ bool send_response(Json response) {
         return true;
     }
     connection.close(1013, "Response queue exhausted");
-    reset_session();
+    schedule_retry(SDL_GetTicksNS());
     return false;
 }
 
@@ -184,29 +195,35 @@ void initialize() {
     options.maxMessageBytes = kMaxMessageBytes;
     options.maxQueuedBytes = 64 * 1024;
     options.maxSendQueueBytes = 128 * 1024;
-    pendingConnection = std::move(options);
+    connectionOptions = std::move(options);
 }
 
 void poll(bool gameReady) {
-    if (pendingConnection) {
-        connection = borealis::ws::connect(std::move(*pendingConnection));
-        pendingConnection.reset();
-    }
-    if (!connection) {
-        return;
-    }
     const uint64_t now = SDL_GetTicksNS();
+    if (!connection) {
+        if (!connectionOptions || now < nextConnectNs) {
+            return;
+        }
+        reset_session();
+        connection = borealis::ws::connect(*connectionOptions);
+        if (!connection) {
+            Log.warn("Live debug connection could not start");
+            schedule_retry(now);
+            return;
+        }
+    }
     const uint64_t elapsed = lastPollNs ? now - lastPollNs : 0;
     lastPollNs = now;
     borealis::ws::Event event;
     for (unsigned count = 0; count < kMaxEventsPerFrame && connection.poll(event); ++count) {
         if (event.kind == borealis::ws::Event::Kind::Closed) {
-            Log.info("Live debug connection closed");
-            reset_session();
-            connection = {};
+            Log.info("Live debug connection closed: error={} status={} code={}",
+                static_cast<int>(event.error), event.status, event.code);
+            schedule_retry(now);
             return;
         }
         if (event.kind == borealis::ws::Event::Kind::Open) {
+            retrySeconds = 1;
             send_response({{"type", "hello"}, {"version", 1}});
         } else if (event.messageKind != borealis::ws::MessageKind::Text) {
             reply_error(nullptr, "invalid_request", "Text JSON messages are required");
@@ -226,7 +243,9 @@ void poll(bool gameReady) {
 }
 
 void shutdown() {
-    pendingConnection.reset();
+    connectionOptions.reset();
+    nextConnectNs = 0;
+    retrySeconds = 1;
     connection.close(1000, "Shutdown");
     connection = {};
     reset_session();

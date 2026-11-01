@@ -22,6 +22,17 @@ std::vector<std::string> sent;
 std::deque<borealis::ws::Event> incoming;
 unsigned commandCalls = 0;
 bool sendQueueFull = false;
+bool failConnect = false;
+bool emptyConnect = false;
+
+void enqueue_closed() {
+    borealis::ws::Event event;
+    event.kind = borealis::ws::Event::Kind::Closed;
+    event.error = borealis::ws::Error::Timeout;
+    event.status = 503;
+    event.code = 1006;
+    incoming.push_back(std::move(event));
+}
 
 void enqueue(std::string message) {
     borealis::ws::Event event;
@@ -87,11 +98,18 @@ CloseResult Connection::close(uint16_t, std::string_view) {
     return CloseResult::Ok;
 }
 Connection connect(Options options) {
+    assert(!connected);
     assert(options.url == "ws://127.0.0.1:9876");
     assert(options.headers.front().value == "Bearer test-token");
     ++connectCalls;
+    if (emptyConnect) {
+        return {};
+    }
     connected = true;
-    openPending = true;
+    openPending = !failConnect;
+    if (failConnect) {
+        enqueue_closed();
+    }
     return {};
 }
 }  // namespace borealis::ws
@@ -107,9 +125,11 @@ void write(borealis::LogLevel, std::string_view, std::string_view) {}
 }  // namespace borealis::log::detail
 
 namespace dusk {
-void runCommand(std::string_view line, CommandState&, const CommandOutput& output) {
+void runCommand(std::string_view line, CommandState& state, const CommandOutput& output) {
     ++commandCalls;
-    if (line == "many") {
+    if (line == "state") {
+        output(std::to_string(state.foundProcId++));
+    } else if (line == "many") {
         for (unsigned index = 0; index < 200; ++index) {
             output("line");
         }
@@ -245,4 +265,73 @@ int main() {
     dusk::live_debug::initialize();
     dusk::live_debug::poll(false);
     assert(connectCalls == 1);
+
+    setenv("DUSK_DEBUG_TOKEN", "test-token", 1);
+    dusk::live_debug::initialize();
+    dusk::live_debug::poll(true);
+    assert(connectCalls == 2);
+    response = request(R"({"id":"state","method":"command","params":{"line":"state"}})", true);
+    assert(response["result"]["lines"][0] == "0");
+    request(R"({"id":"sub","method":"subscribe"})", true);
+    enqueue_closed();
+    dusk::live_debug::poll(true);
+    assert(!connected);
+    nowNs += 999'999'999;
+    dusk::live_debug::poll(true);
+    assert(connectCalls == 2);
+    sent.clear();
+    nowNs += 1;
+    dusk::live_debug::poll(true);
+    assert(connectCalls == 3);
+    assert(sent.size() == 1);
+    assert(nlohmann::json::parse(sent.front())["type"] == "hello");
+    sent.clear();
+    nowNs += 1'000'000'000;
+    dusk::live_debug::poll(true);
+    assert(sent.empty());
+    response = request(R"({"id":"state","method":"command","params":{"line":"state"}})", true);
+    assert(response["result"]["lines"][0] == "0");
+
+    failConnect = true;
+    enqueue_closed();
+    dusk::live_debug::poll(true);
+    for (const unsigned seconds : {1u, 2u, 4u, 8u, 16u, 30u, 30u}) {
+        const auto previousCalls = connectCalls;
+        nowNs += seconds * 1'000'000'000ULL - 1;
+        dusk::live_debug::poll(true);
+        assert(connectCalls == previousCalls);
+        nowNs += 1;
+        dusk::live_debug::poll(true);
+        assert(connectCalls == previousCalls + 1);
+        assert(!connected);
+    }
+    failConnect = false;
+    nowNs += 30'000'000'000ULL;
+    dusk::live_debug::poll(true);
+    assert(connected);
+    const auto recoveredCalls = connectCalls;
+    enqueue_closed();
+    dusk::live_debug::poll(true);
+    nowNs += 1'000'000'000;
+    dusk::live_debug::poll(true);
+    assert(connectCalls == recoveredCalls + 1);
+    assert(connected);
+
+    emptyConnect = true;
+    enqueue_closed();
+    dusk::live_debug::poll(true);
+    nowNs += 1'000'000'000;
+    dusk::live_debug::poll(true);
+    assert(!connected);
+    const auto failedStartCalls = connectCalls;
+    nowNs += 1'999'999'999;
+    dusk::live_debug::poll(true);
+    assert(connectCalls == failedStartCalls);
+    nowNs += 1;
+    dusk::live_debug::poll(true);
+    assert(connectCalls == failedStartCalls + 1);
+    dusk::live_debug::shutdown();
+    nowNs += 300'000'000'000ULL;
+    dusk::live_debug::poll(true);
+    assert(connectCalls == failedStartCalls + 1);
 }
