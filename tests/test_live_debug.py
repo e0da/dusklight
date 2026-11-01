@@ -1,14 +1,18 @@
 import asyncio
+import base64
 import importlib.util
 import json
 import os
 import pty
 import signal
 import socket
+import struct
 import sys
 from pathlib import Path
 import tempfile
 import unittest
+from unittest.mock import AsyncMock, patch
+from types import SimpleNamespace
 
 from websockets.asyncio.client import connect
 from websockets.exceptions import ConnectionClosed, InvalidStatus
@@ -118,6 +122,156 @@ class WorkbenchTests(unittest.IsolatedAsyncioTestCase):
             with self.assertRaises(asyncio.TimeoutError):
                 await self.host.request("ping", timeout=0.01)
             self.assertEqual(self.host.pending, {})
+
+    @staticmethod
+    def png(width=2, height=3, padding=0):
+        return b"\x89PNG\r\n\x1a\n\x00\x00\x00\rIHDR" + struct.pack(">II", width, height) + b"x" * padding
+
+    @staticmethod
+    def capture_chunk(data, offset=0, total=None, done=True):
+        return {"captureId": "capture-1", "state": "ready", "format": "png",
+                "width": 2, "height": 3, "totalBytes": len(data) if total is None else total,
+                "offset": offset, "data": base64.b64encode(data).decode(), "done": done}
+
+    async def test_screenshot_socket_transfer_is_atomic_private_and_not_recorded(self):
+        data = self.png(padding=9000)
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "image.png"
+            record = Path(directory) / "record.jsonl"
+            recorder = live_debug.Recorder(record, 65536)
+            self.host.recorder = recorder
+            app = await self.app()
+            async with app:
+                transfer = asyncio.create_task(self.host.screenshot(path))
+                requests = []
+                replies = [{"captureId": "capture-1", "state": "pending"},
+                           {"captureId": "capture-1", "state": "pending"},
+                           self.capture_chunk(data[:8192], total=len(data), done=False),
+                           self.capture_chunk(data[8192:], offset=8192, total=len(data)),
+                           {"cancelled": True}]
+                for reply in replies:
+                    request = json.loads(await asyncio.wait_for(app.recv(), 1))
+                    self.assertEqual(request["method"], "screenshot")
+                    requests.append(request["params"])
+                    if reply.get("done") is False:
+                        self.assertFalse(path.exists())
+                    await app.send(json.dumps({"type": "response", "id": request["id"], "result": reply}))
+                result = await transfer
+                self.assertEqual(result, {"path": str(path), "width": 2, "height": 3, "bytes": len(data)})
+                self.assertEqual(path.read_bytes(), data)
+                self.assertEqual(path.stat().st_mode & 0o777, 0o600)
+                self.assertEqual(requests[-1], {"action": "cancel", "captureId": "capture-1"})
+                self.assertEqual(requests[-2]["offset"], 8192)
+                self.assertEqual(self.host.unrecorded, set())
+            recorder.close()
+            self.assertEqual(record.read_bytes(), b"")
+            self.assertEqual(sorted(file.name for file in Path(directory).iterdir()), ["image.png", "record.jsonl"])
+
+    async def test_screenshot_malformed_chunks_preserve_existing_file_and_cancel(self):
+        valid = self.capture_chunk(self.png())
+        malformed = [
+            {"offset": 1}, {"offset": True}, {"width": True}, {"width": 4097},
+            {"totalBytes": live_debug.MAX_CAPTURE_BYTES + 1}, {"totalBytes": 0},
+            {"data": "@@@"}, {"data": ""}, {"data": base64.b64encode(b"x" * 8193).decode()},
+            {"done": False}, {"done": 1}, {"captureId": "other"}, {"format": "jpeg"},
+            {"state": "invalid"}, {"width": 1},
+        ]
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "image.png"
+            path.write_bytes(b"previous image")
+            for bad in malformed:
+                with self.subTest(bad=bad):
+                    request = AsyncMock(side_effect=[
+                        {"captureId": "capture-1", "state": "pending"},
+                        {**valid, **bad}, {"cancelled": True},
+                    ])
+                    with patch.object(self.host, "request", request):
+                        with self.assertRaises(live_debug.ProtocolError):
+                            await self.host.screenshot(path)
+                    self.assertEqual(path.read_bytes(), b"previous image")
+                    self.assertEqual(list(Path(directory).iterdir()), [path])
+                    self.assertEqual(request.await_args.args, ("screenshot", {"action": "cancel", "captureId": "capture-1"}))
+
+    async def test_screenshot_rejects_metadata_drift(self):
+        data = self.png(padding=9000)
+        chunks = [self.capture_chunk(data[:8192], total=len(data), done=False),
+                  self.capture_chunk(data[8192:], offset=8192, total=len(data))]
+        chunks[1]["height"] = 4
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "image.png"
+            with patch.object(self.host, "request", AsyncMock(side_effect=[
+                    {"captureId": "capture-1", "state": "pending"}, *chunks, {"cancelled": True}])):
+                with self.assertRaises(live_debug.ProtocolError):
+                    await self.host.screenshot(path)
+            self.assertEqual(list(Path(directory).iterdir()), [])
+
+    async def test_screenshot_disconnect_removes_partial_and_does_not_reconnect(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "image.png"
+            app = await self.app()
+            transfer = asyncio.create_task(self.host.screenshot(path))
+            request = json.loads(await app.recv())
+            await app.send(json.dumps({"type": "response", "id": request["id"], "result": {"captureId": "capture-1", "state": "pending"}}))
+            await app.recv()
+            await app.close()
+            with self.assertRaises(ConnectionError):
+                await transfer
+            self.assertEqual(list(Path(directory).iterdir()), [])
+
+    async def test_screenshot_timeout_cancels_and_cleans_up(self):
+        async def pending(method, params, timeout=10):
+            if params["action"] == "cancel":
+                return {"cancelled": True}
+            return {"captureId": "capture-1", "state": "pending"}
+        request = AsyncMock(side_effect=pending)
+        with tempfile.TemporaryDirectory() as directory:
+            with patch.object(self.host, "request", request):
+                with self.assertRaises(asyncio.TimeoutError):
+                    await self.host.screenshot(Path(directory) / "image.png", timeout=0.01)
+            self.assertEqual(list(Path(directory).iterdir()), [])
+            self.assertEqual(request.await_args.args[1]["action"], "cancel")
+
+    async def test_screenshot_deadline_override_and_invalid_limits(self):
+        request = AsyncMock()
+        for timeout in (0, -1, float("nan"), float("inf")):
+            with self.subTest(timeout=timeout), patch.object(self.host, "request", request):
+                with self.assertRaisesRegex(ValueError, "positive and finite"):
+                    await self.host.screenshot("unused.png", timeout=timeout)
+        request.assert_not_awaited()
+        self.host.ready.set()
+        screenshot = AsyncMock(return_value={"path": "image.png", "bytes": 123})
+        args = SimpleNamespace(wait=1, subscribe=None, command=[], ui=None,
+                               screenshot="image.png", screenshot_timeout=75)
+        with patch.object(self.host, "screenshot", screenshot), patch("builtins.print"):
+            await live_debug.console(self.host, args)
+        screenshot.assert_awaited_once_with("image.png", timeout=75)
+
+    async def test_ui_routing_and_capture_request_validation(self):
+        app = await self.app()
+        async with app:
+            task = asyncio.create_task(self.host.request("ui", {"action": "channel"}))
+            request = json.loads(await app.recv())
+            self.assertEqual(request["method"], "ui")
+            self.assertEqual(request["params"], {"action": "channel"})
+            await app.send(json.dumps({"type": "response", "id": request["id"], "result": {"visible": True}}))
+            self.assertEqual(await task, {"visible": True})
+            for method, params in (("ui", {"action": "invalid"}), ("screenshot", {"action": "invalid"}),
+                                   ("screenshot", {"action": "read", "captureId": "x", "offset": True}),
+                                   ("screenshot", {"action": "read", "captureId": "x", "offset": -1}),
+                                   ("screenshot", {"action": "cancel", "captureId": ""})):
+                with self.subTest(params=params), self.assertRaises(ValueError):
+                    await self.host.request(method, params)
+
+    async def test_one_shot_ui_then_screenshot_console_prints_only_metadata(self):
+        self.host.ready.set()
+        request = AsyncMock(return_value={"visible": True})
+        screenshot = AsyncMock(return_value={"path": "image.png", "bytes": 123})
+        args = SimpleNamespace(wait=1, subscribe=None, command=[], ui="channel", screenshot="image.png")
+        with patch.object(self.host, "request", request), patch.object(self.host, "screenshot", screenshot), patch("builtins.print") as output:
+            await live_debug.console(self.host, args)
+        request.assert_awaited_once_with("ui", {"action": "channel"})
+        screenshot.assert_awaited_once_with("image.png", timeout=120)
+        self.assertIn('{"path": "image.png", "bytes": 123}', [call.args[0] for call in output.call_args_list])
 
     def test_recording_is_bounded_private_and_jsonl(self):
         with tempfile.TemporaryDirectory() as directory:

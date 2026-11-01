@@ -23,6 +23,7 @@ public:
     bool permanent() const override { return true; }
 
     static void refresh_tabs();
+    void open_channel_menu();
 
 protected:
     bool handle_nav_command(Rml::Event& event, NavCommand cmd) override;
