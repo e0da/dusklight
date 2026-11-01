@@ -95,6 +95,7 @@
 #include <cxxopts.hpp>
 #include <dolphin/dvd.h>
 #include <SDL3/SDL_init.h>
+#include <SDL3/SDL_hints.h>
 #include <tracy/Tracy.hpp>
 
 #include <filesystem>
@@ -719,6 +720,9 @@ int game_main(int argc, char* argv[]) {
         config.pauseOnFocusLost = dusk::getSettings().game.pauseOnFocusLost;
         config.imGuiInitCallback = &aurora_imgui_init_callback;
         config.allowTextureDumps = false;
+#if defined(__APPLE__) && TARGET_OS_TV
+        SDL_SetHint(SDL_HINT_TV_REMOTE_AS_JOYSTICK, "0");
+#endif
         auroraInfo = aurora_initialize(argc, argv, &config);
     }
 
