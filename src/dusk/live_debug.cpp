@@ -2,6 +2,8 @@
 
 #include "commands.hpp"
 #include "d/d_com_inf_game.h"
+#include "debug_capture.hpp"
+#include "debug_ui.hpp"
 #include "f_op/f_op_actor.h"
 #include "game_clock.h"
 
@@ -14,6 +16,7 @@
 #include <cmath>
 #include <cstdlib>
 #include <optional>
+#include <stdexcept>
 #include <string>
 #include <string_view>
 #include <utility>
@@ -41,6 +44,7 @@ uint64_t lastPollNs = 0;
 uint64_t nextTelemetryNs = 0;
 
 void reset_session() {
+    debug_capture::reset();
     commandState = {};
     subscriptionHz = 0;
     sequence = 0;
@@ -97,6 +101,19 @@ void handle_request(const std::string& data, bool gameReady) {
     const Json params = request.value("params", Json::object());
     if (method == "ping") {
         reply(id, {{"pong", true}});
+    } else if (method == "screenshot" || method == "ui") {
+        if (!gameReady && method == "ui") {
+            reply_error(id, "not_ready", "The game has not launched");
+            return;
+        }
+        try {
+            reply(id, method == "screenshot" ? debug_capture::request(params) :
+                                               debug_ui::request(params));
+        } catch (const std::invalid_argument& error) {
+            reply_error(id, "invalid_params", error.what());
+        } catch (const std::runtime_error& error) {
+            reply_error(id, "debug_operation_failed", error.what());
+        }
     } else if (method == "subscribe") {
         double hz = 10;
         if (params.contains("hz")) {

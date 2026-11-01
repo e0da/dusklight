@@ -385,13 +385,20 @@ target_sources(dusk_internal PRIVATE src/dusk/channel_context.cpp)
 target_include_directories(dusk_internal PRIVATE "${CMAKE_CURRENT_BINARY_DIR}/generated"
     "${CMAKE_CURRENT_SOURCE_DIR}/libs/channel_context/include")
 if (DUSK_ENABLE_LIVE_DEBUG)
-    target_sources(dusk_internal PRIVATE src/dusk/live_debug.cpp)
+    target_sources(dusk_internal PRIVATE src/dusk/live_debug.cpp
+        src/dusk/debug_capture.cpp src/dusk/debug_ui.cpp)
     if (NOT CMAKE_CROSSCOMPILING AND NOT WIN32)
         add_executable(dusk_live_debug_test EXCLUDE_FROM_ALL
             src/dusk/live_debug.cpp tests/test_live_debug_bridge.cpp)
         target_link_libraries(dusk_live_debug_test PRIVATE dusklight_game_headers
             borealis::core fmt::fmt nlohmann_json::nlohmann_json SDL3::Headers)
         target_compile_options(dusk_live_debug_test PRIVATE -include global.h -UNDEBUG)
+        add_executable(dusk_debug_capture_test EXCLUDE_FROM_ALL
+            src/dusk/debug_capture.cpp tests/test_debug_capture.cpp)
+        target_include_directories(dusk_debug_capture_test PRIVATE src extern/aurora/include)
+        target_link_libraries(dusk_debug_capture_test PRIVATE
+            nlohmann_json::nlohmann_json PNG::PNG SDL3::Headers)
+        target_compile_options(dusk_debug_capture_test PRIVATE -UNDEBUG)
     endif ()
 endif ()
 if (ENABLE_ASAN)

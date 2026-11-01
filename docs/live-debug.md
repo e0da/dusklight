@@ -2,13 +2,13 @@
 
 The optional live debug bridge lets a running Dusklight app connect outward to a
 Python host over WebSocket. It exposes the game's registered debug commands and
-sampled telemetry. This is useful when the app runs on another machine or cannot
+sampled telemetry, UI controls, and composed screenshots. This is useful when the app runs on another machine or cannot
 accept an incoming connection. LLDB remains complementary: use it for breakpoints,
 stacks, memory inspection, and failures before the bridge starts.
 
-Physical-device operation has not been verified. Host loopback tests exercise the
-protocol with a simulated app; they do not prove tvOS signing, networking,
-environment-variable injection, or an actual device connection.
+Command/telemetry operation and live channel switching have been exercised on a
+physical Apple TV. Screenshot capture requires a build containing the Aurora
+readback API described below; host tests alone do not prove device rendering.
 
 ## Build and prepare
 
@@ -95,6 +95,9 @@ controls are:
 - `/ping`: check the app connection.
 - `/subscribe 5`: request telemetry at five samples per second (integer 1–10).
 - `/unsubscribe`: stop telemetry.
+- `/ui channel`: open the Channel dialog without controller input.
+- `/ui menu`, `/ui close`, `/ui status`: open, close, or inspect the overlay.
+- `/screenshot build/channel.png`: save the next composed frame as a PNG.
 - `/quit`: close the workbench.
 
 The host writes each telemetry event as one JSON line. Telemetry includes
@@ -115,11 +118,33 @@ with later retries capped at 30 seconds. A successful connection resets the dela
 Reconnection clears command state and telemetry subscriptions; subscribe again on the host.
 
 Add `--record build/live-debug.jsonl` to append inbound response/event objects to
-a JSONL recording. Files are created with mode `0600`; existing recording files also have their
+a JSONL recording, excluding screenshot responses. Files are created with mode `0600`; existing recording files also have their
 permissions restricted to `0600`. `--record-max-bytes` defaults to 16 MiB and includes existing file
 size. Once a record would exceed the budget it is omitted; recording never grows
 past that budget. Recordings can contain private state and command output. Keep
 them out of Git and share only the relevant redacted excerpts.
+
+## Native screenshots
+
+Screenshots travel through the app's existing authenticated socket. They include
+Aurora's final composition: game, RmlUi menus and ImGui overlays. No Xcode capture
+service or external device tool is used for capture. The renderer performs one
+asynchronous GPU readback on request; normal frames do not copy image data.
+
+```sh
+build/live-debug-venv/bin/python tools/live_debug.py --host LAPTOP_LAN_ADDRESS \
+  --port 8766 --ui channel --screenshot build/channel.png
+```
+
+The host opens the dialog before requesting capture, atomically publishes a mode
+`0600` file, and prints its path and dimensions. Image chunks are excluded from
+console output and JSONL recordings. One capture may be pending at a time; images
+are limited to 4096×4096 and 64 MiB, with 8192-byte decoded transfer chunks.
+Capture uses RGBA8/BGRA8 surfaces that support `CopySrc`; unsupported surfaces,
+unavailable frames, map failures, timeouts and disconnects return errors. Pending
+GPU resources remain owned until their callback retires even after cancellation.
+PNG encoding runs on the game thread on demand, so capture may briefly affect
+frame time. A screenshot is not frame-cadence or performance evidence.
 
 ## Protocol v1
 
@@ -131,7 +156,10 @@ unsupported protocol versions close the connection with code 1008.
 
 Host requests contain `id` (string), `method`, and `params` (object). Supported
 methods are `ping`, `command` (`line`, at most 4096 UTF-8 bytes), `subscribe` (`hz`,
-integer 1–10), and `unsubscribe`. Responses correlate by `id` and carry either an
+integer 1–10), `unsubscribe`, `ui` (`action`: menu/channel/close/status), and
+`screenshot` (`action`: start/read/cancel). A start returns a `captureId`; reads
+supply that ID and a byte `offset`, receiving pending state or ready PNG metadata
+and base64 `data`. Cancel releases the transfer. Session reset also cancels it. Responses correlate by `id` and carry either an
 object `result` or `error` with `code` and `message`. Telemetry has this shape:
 
 ```json
@@ -164,3 +192,6 @@ build/macos-default-relwithdebinfo/dusk_live_debug_test
 
 This host-only target is excluded from normal builds and unavailable when
 cross-compiling. Its assertions remain enabled in release configurations.
+
+The native `dusk_debug_capture_test` target verifies PNG roundtrips, chunk bounds,
+invalid requests, busy state, timeout and cancellation with a fake renderer.

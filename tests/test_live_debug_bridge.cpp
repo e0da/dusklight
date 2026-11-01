@@ -1,4 +1,6 @@
 #include "dusk/commands.hpp"
+#include "dusk/debug_capture.hpp"
+#include "dusk/debug_ui.hpp"
 #include "dusk/live_debug.hpp"
 
 #include <SDL3/SDL_timer.h>
@@ -21,6 +23,7 @@ uint64_t nowNs = 1;
 std::vector<std::string> sent;
 std::deque<borealis::ws::Event> incoming;
 unsigned commandCalls = 0;
+unsigned captureResets = 0;
 bool sendQueueFull = false;
 bool failConnect = false;
 bool emptyConnect = false;
@@ -56,6 +59,27 @@ void expect_error(std::string message, const char* code, bool gameReady = false)
     assert(response["error"]["code"] == code);
 }
 }  // namespace
+
+namespace dusk::debug_capture {
+void reset() {
+    ++captureResets;
+}
+nlohmann::json request(const nlohmann::json& params) {
+    if (params.value("action", "") == "fail") {
+        throw std::runtime_error("Capture unavailable");
+    }
+    return {{"state", "pending"}, {"captureId", "1"}};
+}
+}  // namespace dusk::debug_capture
+
+namespace dusk::debug_ui {
+nlohmann::json request(const nlohmann::json& params) {
+    if (!params.contains("action")) {
+        throw std::invalid_argument("action required");
+    }
+    return {{"action", params["action"]}};
+}
+}  // namespace dusk::debug_ui
 
 Uint64 SDL_GetTicksNS() {
     return nowNs;
@@ -184,6 +208,14 @@ int main() {
     auto response = request(R"({"id":"ping-1","method":"ping"})");
     assert(response["id"] == "ping-1");
     assert(response["result"]["pong"] == true);
+    response = request(R"({"id":"capture","method":"screenshot","params":{"action":"start"}})");
+    assert(response["result"]["state"] == "pending");
+    expect_error(R"({"id":"capture-fail","method":"screenshot","params":{"action":"fail"}})",
+        "debug_operation_failed");
+    expect_error(R"({"id":"ui-early","method":"ui","params":{"action":"channel"}})", "not_ready");
+    expect_error(R"({"id":"ui-invalid","method":"ui","params":{}})", "invalid_params", true);
+    response = request(R"({"id":"ui","method":"ui","params":{"action":"channel"}})", true);
+    assert(response["result"]["action"] == "channel");
     expect_error("{", "invalid_request");
     expect_error(R"({"id":"bad","method":7})", "invalid_request");
     expect_error(R"({"id":"bad","method":"ping","params":[]})", "invalid_request");
@@ -334,4 +366,5 @@ int main() {
     nowNs += 300'000'000'000ULL;
     dusk::live_debug::poll(true);
     assert(connectCalls == failedStartCalls + 1);
+    assert(captureResets > 0);
 }
