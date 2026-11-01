@@ -53,8 +53,10 @@ rustup target add --toolchain nightly aarch64-apple-tvos
 ```
 
 The tvOS preset is experimental; its CI matrix entry is currently disabled.
-Device pairing, signing, game-file transfer, and persistent saves still need
-device validation. The Brewfile does not configure those steps.
+Physical A12 Apple TV pairing, signing, RVZ loading, controller/gyro input and live
+debugging have been validated in this fork. Persistent-save durability and older
+tvOS compatibility remain unverified. The Brewfile does not provision or pair a
+device. See the [Apple TV guide](tvos.md) for the exact validation boundary.
 
 The preset disables Dawn's optional Protobuf and Tint IR binary support, avoiding
 the need for a matching host `protoc` during cross-compilation. Metal rendering

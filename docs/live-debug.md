@@ -6,9 +6,10 @@ sampled telemetry, UI controls, and composed screenshots. This is useful when th
 accept an incoming connection. LLDB remains complementary: use it for breakpoints,
 stacks, memory inspection, and failures before the bridge starts.
 
-Command/telemetry operation and live channel switching have been exercised on a
-physical Apple TV. Screenshot capture requires a build containing the Aurora
-readback API described below; host tests alone do not prove device rendering.
+Command/telemetry operation, live channel switching, remote menu control and native
+screenshot capture have been exercised on a physical Apple TV. See the
+[device checkpoint](tvos.md#verification-checkpoint-2026-11-01) for source revisions
+and visual evidence; host tests alone do not prove device rendering.
 
 ## Build and prepare
 
