@@ -110,6 +110,9 @@ those commands once the app connects, prints responses, and exits unless
 `--subscribe HZ` was also supplied. Piped stdin also accepts commands and host
 controls; EOF ends the session. Requests time out after ten seconds. On disconnect,
 pending requests fail and an interactive host can accept a later app connection.
+The app retries failed or closed connections after 1, 2, 4, 8, 16, then 30 seconds,
+with later retries capped at 30 seconds. A successful connection resets the delay.
+Reconnection clears command state and telemetry subscriptions; subscribe again on the host.
 
 Add `--record build/live-debug.jsonl` to append inbound response/event objects to
 a JSONL recording. Files are created with mode `0600`; existing recording files also have their
