@@ -58,7 +58,9 @@ device validation. The Brewfile does not configure those steps.
 
 The preset disables Dawn's optional Protobuf and Tint IR binary support, avoiding
 the need for a matching host `protoc` during cross-compilation. Metal rendering
-remains enabled. For initial device bring-up, configure without native mods and
+remains enabled. It targets tvOS 15.4 or newer for the SQLite APIs used by Aurora
+and selects SQLite headers and libraries from the tvOS SDK. Older tvOS versions
+are not validated. For initial device bring-up, configure without native mods and
 use a bundle identifier provisioned by your development team:
 
 ```sh

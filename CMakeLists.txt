@@ -21,6 +21,11 @@ if (APPLE AND NOT TVOS AND CMAKE_SYSTEM_NAME STREQUAL tvOS)
     set(IOS OFF)
 endif ()
 
+if (TVOS)
+    set(SQLite3_INCLUDE_DIR "${CMAKE_OSX_SYSROOT}/usr/include")
+    set(SQLite3_LIBRARY "${CMAKE_OSX_SYSROOT}/usr/lib/libsqlite3.tbd")
+endif ()
+
 if(APPLE AND NOT CMAKE_OSX_SYSROOT)
     # If the Xcode SDK is lagging behind system version, CMake needs this done first
     execute_process(COMMAND xcrun --sdk macosx --show-sdk-path
