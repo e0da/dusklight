@@ -60,7 +60,7 @@ reusing a build directory. Neither channel requires a particular branch.
 python3 tools/tvos_channels.py stage --channel lab \
   --app build/tvos-default/Dusklight.app --output build/tvos-channels \
   --commit FULL_BUILD_COMMIT --source-ref YOUR_BUILD_REF \
-  --catalog config/channels.json --version-tag v1.2.3 \
+  --catalog config/channels.json --version-tag midna/v1.2.3 \
   --game-image /private/path/game.rvz
 ```
 
@@ -125,3 +125,6 @@ Packaging tests stub the Rust resolver and native tools to exercise identity,
 metadata, preservation, merging, failure recovery, overlap, replacement, and private
 image guards. Rust tests own inheritance and runtime-context semantics. A real
 Swift/actool staging smoke additionally checks the generated catalog contract.
+
+For the physical-device checkpoint, personal controller layout, save limitations,
+and screenshot evidence, see [Apple TV development and validation](tvos.md).

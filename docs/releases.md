@@ -28,7 +28,7 @@ python3 tools/release_channels.py prepare --tag midna/v0.2.0 --commit FULL_COMMI
 
 Replace `FULL_COMMIT_SHA` with the complete lowercase object ID, rather than a branch name or abbreviated hash. Tag publication follows the repository's human release workflow; neither `prepare` nor `promote` publishes anything.
 
-`prepare` verifies that the existing tag resolves to that commit and that the commit contains a valid channel catalog. It writes `releases/versions/midna%2Fv0.2.0.json`, recording the tag object ID, commit ID, catalog Git blob ID, and optional artifact metadata. The filename encodes the slash in the version tag so records remain in one directory.
+`prepare` verifies that the existing tag resolves to that commit and that the commit contains a valid channel catalog. It rejects duplicate keys while parsing the raw tagged JSON, then resolves the catalog through the canonical Rust engine before writing anything. Missing required fields, missing parents, cycles and invalid defaults are rejected. It writes `releases/versions/midna%2Fv0.2.0.json`, recording the tag object ID, commit ID, catalog Git blob ID, and optional artifact metadata. The filename encodes the slash in the version tag so records remain in one directory.
 
 For optional metadata, pass a JSON object file with `--artifact-metadata FILE`. Keep credentials, copyrighted game data, and machine-specific paths out of tracked release records. Supplying the same tag and metadata again is idempotent; changed metadata is rejected. Decide what metadata belongs in the record before preparing it. Additional build evidence can accompany the candidate or promotion PR.
 
@@ -47,7 +47,7 @@ Review the changed `releases/channels.json` and the new version record in a prom
 python3 tools/release_channels.py promote --channel play --tag midna/v0.2.0
 ```
 
-`promote` requires an existing immutable record. It rechecks the tag object, resolved commit, and catalog blob, then confirms that the requested channel exists in the catalog at that commit. The current working tree's catalog does not determine whether an older release has a channel. Each pointer includes the tag, commit, and pinned catalog blob ID. A moved or reannotated tag, missing record, or mismatched catalog is rejected.
+`promote` requires an existing immutable record. It rechecks the tag object, resolved commit, and catalog blob, validates the raw catalog through the same parser/resolver path, then confirms that the requested channel exists in the catalog at that commit. The current working tree's catalog does not determine whether an older release has a channel. Each pointer includes the tag, commit, and pinned catalog blob ID. A moved or reannotated tag, missing record, mismatched catalog or invalid legacy catalog is rejected before pointer mutation.
 
 Writes are atomic. Version records are created without overwriting existing records. Channel pointers change only through an explicit promotion command; no version bump, build, signing, installation, tag creation, or push is performed. A rollback uses the same explicit promotion process to select a previously recorded and validated version.
 

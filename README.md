@@ -42,6 +42,8 @@ Visit the [official installation guide](https://twilitrealm.dev/install/) for fu
 
 If you'd like to build Dusklight from source, please read the [build instructions](docs/building.md).
 
+For this fork's Apple TV work, start with the [development and validation guide](docs/tvos.md), including controller setup, channel builds, native debugging, and the [performance investigation](docs/tvos-performance.md).
+
 Pull requests are welcomed! Note that we do not accept contributions that are primarily AI-generated and will close your PR if we suspect as much. Please also see the [code conventions](docs/code-conventions.md).
 
 # Credits
