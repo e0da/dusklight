@@ -53,6 +53,9 @@
 #include "dusk/interp/frame_interpolation.h"
 #include "dusk/iso_validate.hpp"
 #include "dusk/logging.h"
+#if DUSK_ENABLE_LIVE_DEBUG
+#include "dusk/live_debug.hpp"
+#endif
 #include "dusk/main.h"
 #include "dusk/mod_loader.hpp"
 #include "dusk/mods/svc/window.hpp"
@@ -150,6 +153,9 @@ AuroraInfo auroraInfo;
 
 bool launchUILoop() {
     while (dusk::IsRunning && !dusk::IsGameLaunched) {
+#if DUSK_ENABLE_LIVE_DEBUG
+        dusk::live_debug::poll(false);
+#endif
         const AuroraEvent* event = aurora_update();
         while (event != nullptr && event->type != AURORA_NONE) {
             switch (event->type) {
@@ -272,6 +278,9 @@ void main01(void) {
 
         eventsDone:;
 
+#if DUSK_ENABLE_LIVE_DEBUG
+        dusk::live_debug::poll(true);
+#endif
         if (!aurora_begin_frame()) {
             DuskLog.debug("aurora_begin_frame returned false, skipping draw this frame");
             continue;
@@ -759,6 +768,9 @@ int game_main(int argc, char* argv[]) {
 
     dusk::texture_replacements::reload();
     dusk::ui::initialize();
+#if DUSK_ENABLE_LIVE_DEBUG
+    dusk::live_debug::initialize();
+#endif
     dusk::ui::apply_scale();
     dusk::ui::push_document(std::make_unique<dusk::ui::Overlay>(), true, true);
     dusk::ui::push_document(std::make_unique<dusk::ui::TouchControls>(), false, true);
@@ -869,6 +881,9 @@ int game_main(int argc, char* argv[]) {
 
             // pre game launch ui main loop
             if (!launchUILoop()) {
+#if DUSK_ENABLE_LIVE_DEBUG
+                dusk::live_debug::shutdown();
+#endif
                 borealis::shutdown();
                 borealis::sentry::shutdown();
                 borealis::log::shutdown();
@@ -961,6 +976,9 @@ int game_main(int argc, char* argv[]) {
     OSReport("Starting main01 (Game Loop)...\n");
 
     main01();
+#if DUSK_ENABLE_LIVE_DEBUG
+    dusk::live_debug::shutdown();
+#endif
     borealis::shutdown();
 
     // We need to cleanly shut down the threads to avoid crashes on shutdown.
