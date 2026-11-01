@@ -231,6 +231,21 @@ class WorkbenchTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(list(Path(directory).iterdir()), [])
             self.assertEqual(request.await_args.args[1]["action"], "cancel")
 
+    async def test_screenshot_deadline_override_and_invalid_limits(self):
+        request = AsyncMock()
+        for timeout in (0, -1, float("nan"), float("inf")):
+            with self.subTest(timeout=timeout), patch.object(self.host, "request", request):
+                with self.assertRaisesRegex(ValueError, "positive and finite"):
+                    await self.host.screenshot("unused.png", timeout=timeout)
+        request.assert_not_awaited()
+        self.host.ready.set()
+        screenshot = AsyncMock(return_value={"path": "image.png", "bytes": 123})
+        args = SimpleNamespace(wait=1, subscribe=None, command=[], ui=None,
+                               screenshot="image.png", screenshot_timeout=75)
+        with patch.object(self.host, "screenshot", screenshot), patch("builtins.print"):
+            await live_debug.console(self.host, args)
+        screenshot.assert_awaited_once_with("image.png", timeout=75)
+
     async def test_ui_routing_and_capture_request_validation(self):
         app = await self.app()
         async with app:
@@ -255,7 +270,7 @@ class WorkbenchTests(unittest.IsolatedAsyncioTestCase):
         with patch.object(self.host, "request", request), patch.object(self.host, "screenshot", screenshot), patch("builtins.print") as output:
             await live_debug.console(self.host, args)
         request.assert_awaited_once_with("ui", {"action": "channel"})
-        screenshot.assert_awaited_once_with("image.png")
+        screenshot.assert_awaited_once_with("image.png", timeout=120)
         self.assertIn('{"path": "image.png", "bytes": 123}', [call.args[0] for call in output.call_args_list])
 
     def test_recording_is_bounded_private_and_jsonl(self):

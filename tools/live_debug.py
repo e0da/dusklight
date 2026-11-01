@@ -9,6 +9,7 @@ import concurrent.futures
 from contextlib import suppress
 import hmac
 import json
+import math
 import os
 from pathlib import Path
 import secrets
@@ -28,6 +29,7 @@ MAX_PENDING = 32
 MAX_CAPTURE_BYTES = 64 * 1024 * 1024
 MAX_CAPTURE_CHUNK = 8192
 UI_ACTIONS = ("channel", "menu", "close", "status")
+DEFAULT_SCREENSHOT_TIMEOUT = 120
 
 
 class ProtocolError(Exception):
@@ -198,8 +200,10 @@ class Workbench:
             self.pending.pop(request_id, None)
             self.unrecorded.discard(request_id)
 
-    async def screenshot(self, destination, timeout=30):
+    async def screenshot(self, destination, timeout=DEFAULT_SCREENSHOT_TIMEOUT):
         """Stream one bounded PNG into a private file, publishing only a complete image."""
+        if not math.isfinite(timeout) or timeout <= 0:
+            raise ValueError("screenshot timeout must be positive and finite")
         destination = Path(destination)
         capture_id = None
         capture_connection = self.connection
@@ -348,8 +352,11 @@ async def console(workbench, args):
         print(json.dumps(await workbench.request("command", {"line": command})))
     if args.ui:
         print(json.dumps(await workbench.request("ui", {"action": args.ui})))
+        if args.screenshot:
+            await asyncio.sleep(0.25)
+    screenshot_timeout = getattr(args, "screenshot_timeout", DEFAULT_SCREENSHOT_TIMEOUT)
     if args.screenshot:
-        print(json.dumps(await workbench.screenshot(args.screenshot)))
+        print(json.dumps(await workbench.screenshot(args.screenshot, timeout=screenshot_timeout)))
     if (args.command or args.ui or args.screenshot) and not args.subscribe:
         return
     print("Enter a game command, /ping, /subscribe HZ, /unsubscribe, /ui ACTION, /screenshot PATH, or /quit", file=sys.stderr)
@@ -384,7 +391,7 @@ async def console(workbench, args):
                     words = shlex.split(line)
                     if len(words) != 2:
                         raise ValueError("usage: /screenshot PATH")
-                    result = await workbench.screenshot(words[1])
+                    result = await workbench.screenshot(words[1], timeout=screenshot_timeout)
                 else:
                     result = await workbench.request("command", {"line": line})
                 print(json.dumps(result), flush=True)
@@ -414,6 +421,8 @@ def main():
     parser.add_argument("--generate-token", action="store_true", help="print a fresh token and exit")
     parser.add_argument("--command", action="append", default=[])
     parser.add_argument("--screenshot", type=Path, help="save one composited PNG through the app debug socket")
+    parser.add_argument("--screenshot-timeout", type=float, default=DEFAULT_SCREENSHOT_TIMEOUT,
+                        help="total screenshot transfer deadline in seconds (default: 120)")
     parser.add_argument("--ui", choices=UI_ACTIONS, help="inspect or control the app overlay")
     parser.add_argument("--subscribe", type=int, choices=range(1, 11))
     parser.add_argument("--wait", type=float, default=60, help="seconds to wait for app")
@@ -425,6 +434,8 @@ def main():
         return
     if not args.token:
         parser.error("set DUSK_DEBUG_TOKEN or pass --token")
+    if not math.isfinite(args.screenshot_timeout) or args.screenshot_timeout <= 0:
+        parser.error("screenshot timeout must be positive and finite")
     if args.wait <= 0 or args.record_max_bytes < 0:
         parser.error("wait must be positive and recording limit nonnegative")
     try:

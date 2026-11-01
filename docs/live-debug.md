@@ -140,6 +140,9 @@ The host opens the dialog before requesting capture, atomically publishes a mode
 `0600` file, and prints its path and dimensions. Image chunks are excluded from
 console output and JSONL recordings. One capture may be pending at a time; images
 are limited to 4096×4096 and 64 MiB, with 8192-byte decoded transfer chunks.
+Combined `--ui` and `--screenshot` waits 250 ms for menu transitions before capture.
+The transfer deadline defaults to 120 seconds; use `--screenshot-timeout SECONDS`
+to adjust it. Ordinary RPC requests retain their separate ten-second timeout.
 Capture uses RGBA8/BGRA8 surfaces that support `CopySrc`; unsupported surfaces,
 unavailable frames, map failures, timeouts and disconnects return errors. Pending
 GPU resources remain owned until their callback retires even after cancellation.
