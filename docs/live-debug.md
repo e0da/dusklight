@@ -12,10 +12,10 @@ environment-variable injection, or an actual device connection.
 
 ## Build and prepare
 
-The bridge is disabled by default. Enable it explicitly when configuring a build:
+The bridge capability is included by default, with runtime activation controlled by the shared channel context. Select Lab to activate it; Play leaves it inactive. An explicitly reduced build can omit the capability with `DUSK_ENABLE_LIVE_DEBUG=OFF`.
 
 ```sh
-cmake --preset macos-default-relwithdebinfo -DDUSK_ENABLE_LIVE_DEBUG=ON
+cmake --preset macos-default-relwithdebinfo
 cmake --build --preset macos-default-relwithdebinfo
 ```
 
@@ -44,14 +44,14 @@ build/live-debug-venv/bin/python tools/live_debug.py
 Start the app from a second shell with that same token and the host URL:
 
 ```sh
+export DUSK_CHANNEL=lab
 export DUSK_DEBUG_URL=ws://127.0.0.1:8765
 # Set DUSK_DEBUG_TOKEN to the same secret in this shell.
 build/macos-default-relwithdebinfo/Dusklight.app/Contents/MacOS/Dusklight --dvd /path/to/game.iso
 ```
 
 The host waits up to 60 seconds for the app; use `--wait SECONDS` to change this.
-The URL and token must reach the app's environment before launch. The bridge's
-build flag and both variables are required; ordinary builds do not expose it.
+The URL and token must reach the app's environment before launch. Both variables and an active live-control feature are required. Channel selection follows [channel-context.md](channel-context.md).
 
 For a remote app, set `--host` to the host's reachable interface and put that host's
 address in `DUSK_DEBUG_URL`. The default binding is `127.0.0.1`; `0.0.0.0` binds all

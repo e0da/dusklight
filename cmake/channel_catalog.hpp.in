@@ -1,0 +1,2 @@
+#pragma once
+inline constexpr char kChannelCatalogJson[] = R"DUSK_CHANNEL_CFG(@DUSK_CHANNEL_CATALOG_JSON@)DUSK_CHANNEL_CFG";

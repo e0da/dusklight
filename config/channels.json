@@ -1,0 +1,42 @@
+{
+  "schemaVersion": 1,
+  "defaultChannel": "play",
+  "collections": {
+    "gameplay/base": {
+      "extends": [],
+      "tooling": {
+        "debugHost": {"port": 8766},
+        "telemetryHz": 1
+      },
+      "features": {
+        "diagnostics": {
+          "liveControl": {"enabled": false},
+          "inputOverlay": {"enabled": false, "gyro": false}
+        },
+        "input": {
+          "gyroAim": {"enabled": true},
+          "fullControllersOnly": {"enabled": true}
+        }
+      }
+    },
+    "diagnostics/lab": {
+      "extends": [],
+      "features": {
+        "diagnostics": {
+          "liveControl": {"enabled": true},
+          "inputOverlay": {"enabled": true, "gyro": true}
+        }
+      }
+    }
+  },
+  "channels": {
+    "play": {
+      "extends": ["gameplay/base"],
+      "app": {"displayName": "Dusklight Play", "bundleSuffix": "play", "iconStyle": "play"}
+    },
+    "lab": {
+      "extends": ["gameplay/base", "diagnostics/lab"],
+      "app": {"displayName": "Dusklight Lab", "bundleSuffix": "lab", "iconStyle": "lab"}
+    }
+  }
+}

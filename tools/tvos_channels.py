@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Stage independent, unsigned tvOS channel bundles; never sign or install them."""
+"""Stage tvOS channel contexts without signing, installing, or promoting versions."""
 
 import argparse
 import hashlib
@@ -11,8 +11,12 @@ import shutil
 import subprocess
 import tempfile
 
+if __package__:
+    from . import channel_context
+else:
+    import channel_context
 
-CHANNELS = {"trunk": "Dusklight Trunk", "dev": "Dusklight Dev"}
+
 DISC_SUFFIXES = {".rvz", ".iso", ".gcm", ".wia", ".wbfs", ".ciso", ".gcz"}
 
 
@@ -57,32 +61,50 @@ def require_private_output(path):
 
 
 def stage(args, runner=subprocess.run):
-    channel = args.channel
-    if channel not in CHANNELS:
-        raise ValueError("channel must be trunk or dev")
-    if not re.fullmatch(r"[0-9a-fA-F]{40}|[0-9a-fA-F]{64}", args.commit):
-        raise ValueError("commit must be a full 40- or 64-digit hexadecimal object ID")
-    if not args.source_ref or any(c.isspace() for c in args.source_ref):
-        raise ValueError("source-ref must be a nonempty ref without whitespace")
-    if channel == "trunk" and args.source_ref not in ("main", "refs/heads/main"):
-        raise ValueError("trunk requires source-ref main or refs/heads/main")
-    if not re.fullmatch(r"[A-Za-z0-9-]+(?:\.[A-Za-z0-9-]+)+", args.bundle_prefix):
-        raise ValueError("bundle-prefix must be a reverse-DNS bundle identifier")
-    if args.bundle_prefix.endswith((".trunk", ".dev")):
-        raise ValueError("bundle-prefix cannot contain a reserved channel suffix")
     app = Path(args.app).expanduser().resolve(strict=True)
     output = Path(args.output).expanduser().resolve()
     if not app.is_dir() or app.suffix != ".app":
         raise ValueError("app must be an existing .app directory")
     if contains(app, output) or contains(output, app):
         raise ValueError("output and source app must not overlap")
+    catalog_path = app / "channel-catalog.json"
+    if not catalog_path.is_file():
+        raise ValueError("source app lacks channel-catalog.json; rebuild a context-aware executable")
+    raw_catalog = channel_context.load_catalog(catalog_path)
+    requested_catalog = getattr(args, "catalog", None)
+    if requested_catalog:
+        supplied = channel_context.load_catalog(Path(requested_catalog))
+        canonical = lambda value: json.dumps(value, sort_keys=True, separators=(",", ":"), allow_nan=False)
+        if canonical(supplied) != canonical(raw_catalog):
+            raise ValueError("supplied catalog differs from the executable's artifact catalog")
+    catalog = channel_context.resolve_catalog(raw_catalog)
+    channel = args.channel or catalog["defaultChannel"]
+    if channel not in catalog["channels"] or not re.fullmatch(r"[A-Za-z0-9_-]+", channel):
+        raise ValueError("unknown or unsafe channel name")
+    context = catalog["channels"][channel]
+    app_context = context["app"]
+    display_name = app_context["displayName"]
+    suffix = app_context["bundleSuffix"]
+    icon_style = app_context["iconStyle"]
+    if not re.fullmatch(r"[A-Za-z0-9-]+(?:\.[A-Za-z0-9-]+)*", suffix):
+        raise ValueError("catalog app.bundleSuffix is not a safe bundle suffix")
+    if icon_style not in ("play", "lab"):
+        raise ValueError("catalog app.iconStyle must be play or lab")
+    version_tag = getattr(args, "version_tag", None)
+    if version_tag is not None and (not isinstance(version_tag, str) or not version_tag or any(c.isspace() for c in version_tag)):
+        raise ValueError("version-tag must be nonempty metadata without whitespace")
+    if not re.fullmatch(r"[0-9a-fA-F]{40}|[0-9a-fA-F]{64}", args.commit):
+        raise ValueError("commit must be a full 40- or 64-digit hexadecimal object ID")
+    if not args.source_ref or any(c.isspace() for c in args.source_ref):
+        raise ValueError("source-ref must be a nonempty ref without whitespace")
+    if not re.fullmatch(r"[A-Za-z0-9-]+(?:\.[A-Za-z0-9-]+)+", args.bundle_prefix):
+        raise ValueError("bundle-prefix must be a reverse-DNS bundle identifier")
+    if any(args.bundle_prefix.endswith("." + value["app"]["bundleSuffix"]) for value in catalog["channels"].values()):
+        raise ValueError("bundle-prefix cannot contain a reserved channel suffix")
     target = output / channel
-    bundle_id = f"{args.bundle_prefix}.{channel}"
+    bundle_id = f"{args.bundle_prefix}.{suffix}"
     info = load_plist(app / "Info.plist")
     source_bundle_id = info.get("CFBundleIdentifier")
-    other = "dev" if channel == "trunk" else "trunk"
-    if info.get("DusklightChannel") == other or info.get("CFBundleIdentifier") == f"{args.bundle_prefix}.{other}":
-        raise ValueError("cannot relabel the other reserved channel")
     executable = info.get("CFBundleExecutable")
     if not isinstance(executable, str) or not executable or Path(executable).name != executable:
         raise ValueError("CFBundleExecutable must be a filename")
@@ -94,7 +116,7 @@ def stage(args, runner=subprocess.run):
         if not args.replace:
             raise ValueError("channel destination exists; pass --replace for an intentional update")
         old_info = load_plist(target / "Dusklight.app" / "Info.plist")
-        if old_info.get("CFBundleIdentifier") != bundle_id or old_info.get("DusklightChannel") != channel:
+        if old_info.get("CFBundleIdentifier") != bundle_id or old_info.get("DusklightOutputChannel") != channel:
             raise ValueError("replacement destination has the wrong channel identity")
     game_image = None
     if args.game_image:
@@ -109,11 +131,10 @@ def stage(args, runner=subprocess.run):
     temporary = Path(tempfile.mkdtemp(prefix=f".{channel}-stage-", dir=output))
     try:
         staged_app = temporary / "Dusklight.app"
-        shutil.copytree(app, staged_app, symlinks=True,
-                        ignore=shutil.ignore_patterns("_CodeSignature", "embedded.mobileprovision"))
+        shutil.copytree(app, staged_app, symlinks=True)
         icons = temporary / "icons"
         runner(["swift", str(Path(__file__).resolve().with_name("tvos_icons.swift")),
-                "--channel", channel, "--output", str(icons)], check=True)
+                "--channel", icon_style, "--output", str(icons)], check=True)
         partial = temporary / "asset-info.plist"
         runner(["xcrun", "actool", str(icons / "Assets.xcassets"),
                 "--compile", str(staged_app), "--platform", "appletvos",
@@ -122,10 +143,14 @@ def stage(args, runner=subprocess.run):
         if not (staged_app / "Assets.car").is_file():
             raise ValueError("actool did not produce Assets.car")
         merge_plist(info, load_plist(partial))
-        info.update({"CFBundleIdentifier": bundle_id, "CFBundleName": CHANNELS[channel],
-                     "CFBundleDisplayName": CHANNELS[channel], "UIDeviceFamily": [3],
-                     "DusklightChannel": channel, "DusklightSourceCommit": args.commit.lower(),
+        info.update({"CFBundleIdentifier": bundle_id, "CFBundleName": display_name,
+                     "CFBundleDisplayName": display_name, "UIDeviceFamily": [3],
+                     "DusklightOutputChannel": channel, "DusklightSourceCommit": args.commit.lower(),
                      "DusklightSourceRef": args.source_ref})
+        if version_tag is not None:
+            info["DusklightVersionTag"] = version_tag
+        (staged_app / "channel-contexts.json").write_text(json.dumps(catalog, indent=2) + "\n")
+        (staged_app / "channel-output.json").write_text(json.dumps({"channel": channel}) + "\n")
         with (staged_app / "Info.plist").open("wb") as destination:
             plistlib.dump(info, destination)
         if game_image:
@@ -135,12 +160,15 @@ def stage(args, runner=subprocess.run):
         image_path = ("game" + game_image.suffix.lower()) if game_image else (bundled_images[0] if len(bundled_images) == 1 else None)
         manifest = {
             "schemaVersion": 1, "channel": channel, "bundleIdentifier": bundle_id,
-            "displayName": CHANNELS[channel], "commit": args.commit.lower(),
+            "displayName": display_name, "commit": args.commit.lower(),
             "sourceRef": args.source_ref, "sourceApp": str(app),
             "sourceBundleIdentifier": source_bundle_id,
             "sourceIdentityVerification": "caller-provided; not verified by staging",
             "executable": executable, "executableSHA256": sha256(staged_app / executable),
-            "signed": False, "gameImageIncluded": bool(bundled_images),
+            "signing": "not performed; copied source signatures may be stale",
+            "versionTag": version_tag, "catalogSHA256": sha256(catalog_path),
+            "artifactCatalogSHA256": sha256(catalog_path),
+            "context": context, "gameImageIncluded": bool(bundled_images),
             "gameImageRelativePath": image_path, "gameImageFiles": bundled_images,
         }
         (temporary / "channel-manifest.json").write_text(json.dumps(manifest, indent=2) + "\n")
@@ -148,7 +176,7 @@ def stage(args, runner=subprocess.run):
             if not args.replace or target.is_symlink():
                 raise ValueError("destination changed during staging; refusing replacement")
             current = load_plist(target / "Dusklight.app" / "Info.plist")
-            if current.get("CFBundleIdentifier") != bundle_id or current.get("DusklightChannel") != channel:
+            if current.get("CFBundleIdentifier") != bundle_id or current.get("DusklightOutputChannel") != channel:
                 raise ValueError("replacement destination has the wrong channel identity")
             backup = temporary.with_name(temporary.name + "-previous")
             target.rename(backup)
@@ -169,8 +197,10 @@ def stage(args, runner=subprocess.run):
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     commands = parser.add_subparsers(dest="action", required=True)
-    command = commands.add_parser("stage", help="copy and identify an unsigned channel bundle")
-    command.add_argument("--channel", choices=CHANNELS, required=True)
+    command = commands.add_parser("stage", help="stage a complete build with an initial channel context")
+    command.add_argument("--channel", help="defaults to the tracked catalog defaultChannel")
+    command.add_argument("--catalog", type=Path, help="optional catalog; must match the app artifact catalog")
+    command.add_argument("--version-tag", help="record version metadata; creates no Git tag")
     command.add_argument("--app", required=True)
     command.add_argument("--output", required=True)
     command.add_argument("--commit", required=True)

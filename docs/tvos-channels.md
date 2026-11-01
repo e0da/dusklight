@@ -1,74 +1,127 @@
-# Apple TV trunk and dev builds
+# Apple TV channel contexts
 
-Keep two installations on the TV:
+A channel selects settings from the tracked [catalog](../config/channels.json).
+Every staged app carries the complete resolved catalog and the complete executable.
+Selecting a channel changes its initial context and app identity; it does not
+remove feature code, create a version, or promote a build.
 
-| Channel | Home screen name | Icon | Default bundle ID |
+| Channel | Home screen name | Icon badge | Default bundle ID |
 | --- | --- | --- | --- |
-| Trunk | Dusklight Trunk | Gold, marked TRUNK | `dev.e0da.dusklight.trunk` |
-| Dev | Dusklight Dev | Purple/cyan, marked DEV | `dev.e0da.dusklight.dev` |
+| Play | Dusklight Play | Gold PLAY | `dev.e0da.dusklight.play` |
+| Lab | Dusklight Lab | Purple LAB | `dev.e0da.dusklight.lab` |
 
-Distinct bundle IDs give each app its own tvOS data container, including saves,
-controller settings, and shader caches. Development updates target only Dev.
-Keep the last validated Trunk installed while testing changes. These are local
-development channels, not App Store release configurations.
+Distinct bundle IDs give the installations separate tvOS containers, saves,
+controller settings, and caches. Keep a known working installation while testing
+updates. Channel names describe context, independently of source branches or
+version tags; either channel can use the same compiled executable.
+
+## Resolve the tracked catalog
+
+Collections provide reusable settings. `extends` references collections, in order;
+later parents override earlier parents, then the child overrides the result.
+Objects merge recursively; arrays and scalar values replace their predecessors.
+`null` is a value, with no deletion semantics. Cycles, missing references, duplicate
+JSON keys, and invalid schema types are errors.
+
+The catalog defaults to Play. Both channels enable gyro aiming and the full
+controller policy. Play disables live control, the input overlay, and its gyro
+indicators. Lab inherits the same gameplay settings and adds a diagnostics mixin
+that enables those diagnostics. Tooling defaults include debug port 8766 and
+one telemetry sample per second. Features and tooling can grow nested settings
+without adding another flat flag namespace.
+
+Rust in `libs/channel_context` owns resolution. The Python entrypoint delegates to
+that CLI and contains no inheritance implementation. Install Rust/Cargo first,
+or set `DUSK_CHANNEL_CONTEXT_BIN` to a previously built `channel-context` binary:
+
+```sh
+python3 tools/channel_context.py resolve --catalog config/channels.json
+python3 tools/channel_context.py resolve --catalog config/channels.json --channel lab
+python3 tools/channel_context.py resolve --catalog config/channels.json --all
+```
+
+`--all` emits all resolved contexts for build/runtime embedding. A single resolved
+context contains `channel`, `app`, `tooling`, and `features`. The complete result
+contains `schemaVersion`, `defaultChannel`, and `channels`. Build integration,
+host tooling, and runtime selection consume this shared model. Staging records an
+initial channel in `channel-output.json` and `DusklightOutputChannel`. At startup,
+`--channel` or `DUSK_CHANNEL` overrides that file; without any selection, runtime
+uses the compiled catalog default. The compiled raw catalog remains runtime
+authority; the staged resolved catalog supports inspection. Runtime changes do not rewrite the
+committed catalog or the installed bundle identity.
 
 ## Build and stage
 
-Build the desired source revision with the experimental `tvos-default` preset
-as described in [building.md](building.md). Use a clean `main` checkout for Trunk;
-Dev can use a working branch. Record the exact commit when compiling. Copy or
-stage the completed app before rebuilding the shared CMake output for another
-revision. Separate CMake build directories can also be selected with `-B`.
-
-From the tooling checkout, stage an unsigned channel bundle:
+Build the desired source revision with `tvos-default` as described in
+[building.md](building.md). Record the actual build commit and source ref before
+reusing a build directory. Neither channel requires a particular branch.
 
 ```sh
-python3 tools/tvos_channels.py stage --channel dev \
+python3 tools/tvos_channels.py stage --channel lab \
   --app build/tvos-default/Dusklight.app --output build/tvos-channels \
-  --commit FULL_BUILD_COMMIT --source-ref YOUR_BUILD_BRANCH \
+  --commit FULL_BUILD_COMMIT --source-ref YOUR_BUILD_REF \
+  --catalog config/channels.json --version-tag v1.2.3 \
   --game-image /private/path/game.rvz
 ```
 
-For Trunk, select `--channel trunk --source-ref main` and provide the actual main
-build commit. The script requires a full hexadecimal commit ID. It records the
-caller-provided source claim and the executable's SHA-256; it does not independently
-prove which source produced an arbitrary executable. Compare the build's generated
-`borealis/version.h` revision and retain the build log before promotion.
+Omit `--channel` to use `defaultChannel` from the artifact catalog. The source app
+must contain `channel-catalog.json`, copied from the same raw catalog that CMake
+embedded in the executable. Staging uses that artifact by default. An explicit
+`--catalog` must match it structurally; formatting differences are allowed. A
+missing or different catalog is rejected before staging. This guards against
+using new tooling settings with an older binary; it does not independently prove
+the provenance of an arbitrary executable.
+`--version-tag` is optional recorded metadata: staging
+creates no Git tags and changes no promotion pointers. Use the actual executable's
+source commit even when staging from a newer tooling checkout. A full hexadecimal
+commit ID and an executable SHA-256 preserve the supplied provenance; packaging
+does not independently prove that an arbitrary binary came from that commit.
 
-Staging invokes the native Swift icon generator and Xcode `actool`, merges the
-compiled icon metadata, and writes `channel-manifest.json`. No extra image package
-is needed. Output paths are `build/tvos-channels/{trunk,dev}/Dusklight.app`. Included
-game images must remain private; repository output containing them must be ignored.
+Staging copies the complete app, invokes the Swift icon generator and Xcode
+`actool`, and merges the generated icon plist keys. It sets the catalog's display
+name and bundle suffix, `UIDeviceFamily` to `[3]`, and the initial output channel.
+It embeds `channel-contexts.json` with every resolved channel and
+`channel-output.json` with the initial selection, and writes a sibling
+`channel-manifest.json` with the selected context, catalog hash, source provenance,
+executable hash, artifact catalog hash, and optional version tag. It preserves bundled profiles and code;
+changes to the bundle require signing again. Staging performs no signing, install,
+launch, or removal.
 
-Existing output is rejected unless `--replace` is supplied. Replacement is limited
-to the same channel identity, and failed staging preserves the previous output.
-Neither command signs, installs, launches, or removes an app.
+Outputs are `build/tvos-channels/{play,lab}/Dusklight.app`. Existing outputs require
+`--replace`, and replacement must match the existing app/channel identity. Source
+and output paths cannot overlap. Failed icon generation or compilation leaves the
+previous staged output intact.
+
+Optional private disc images use stable names such as `game.rvz` or `game.iso`.
+The manifest records `gameImageRelativePath` and root image filenames. Output
+containing images, including images inherited from the source app, must be ignored
+when inside a Git repository. Keep game data, provisioning profiles, and credentials
+private and outside commits.
 
 ## Sign, install, and validate
 
-Use a tvOS development profile matching the selected channel's bundle ID. Add the
-profile and sign the staged bundle after packaging. Validate its signature and
-bundle ID before installing with `devicectl`. Keep credentials, profiles, and game
-images outside Git.
+Use a tvOS development profile matching the selected catalog-derived bundle ID.
+Verify the final signature and identity before installing with `devicectl`.
+Staging may preserve an old signature or source profile; neither establishes that
+the changed bundle is ready to install.
 
-Each app needs its own readable game path and initial controller settings. For a
+Each installation needs its own readable game path and controller settings. For a
 privately bundled image, resolve the installed bundle URL and launch with
-`--dvd /DEVICE/BUNDLE/PATH/game.rvz`; startup records that path for subsequent
-launches. Updates can change the bundle URL, so resolve it again after installing.
-Copy initial saves and controller profiles explicitly with backups; there is no
-live save synchronization between channels. tvOS cache storage remains evictable.
+`--dvd /DEVICE/BUNDLE/PATH/game.rvz`. Updates can change that URL. Copy initial
+saves and controller profiles explicitly with backups; channel containers have no
+live save synchronization. tvOS cache storage remains evictable.
 
-To promote Trunk, first validate the exact main candidate as Dev while the previous
-Trunk remains installed. Check boot, controls, gyro, save access, and representative
-gameplay. Then package that same raw main build as Trunk and retain its manifest.
-A new commit on `main` alone is not a reason to replace the working Trunk.
-
-## Checks and previews
+Validation must identify the actual executable revision, resolved catalog, selected
+channel, display name, icon, profile, and bundle ID. Successful installation alone
+does not prove older-tvOS compatibility, graphics performance, or every context
+transition. Keep the prior working installation until its replacement is checked.
 
 ```sh
 python3 -m unittest discover -s tests -p test_tvos_channels.py -v
-swift tools/tvos_icons.swift --channel trunk --output build/icon-preview/trunk
-swift tools/tvos_icons.swift --channel dev --output build/icon-preview/dev
+cargo test --manifest-path libs/channel_context/Cargo.toml
 ```
 
-Each icon output includes `preview.png` and the layered tvOS asset catalog.
+Packaging tests stub the Rust resolver and native tools to exercise identity,
+metadata, preservation, merging, failure recovery, overlap, replacement, and private
+image guards. Rust tests own inheritance and runtime-context semantics. A real
+Swift/actool staging smoke additionally checks the generated catalog contract.

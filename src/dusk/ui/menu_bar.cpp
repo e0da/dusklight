@@ -11,6 +11,7 @@
 #include "warp.hpp"
 #include "window.hpp"
 
+#include "dusk/channel_context.hpp"
 #include "dusk/game_mode.hpp"
 #include "dusk/livesplit.h"
 #include "dusk/main.h"
@@ -22,9 +23,10 @@
 #include "f_pc/f_pc_name.h"
 #include "m_Do/m_Do_audio.h"
 
+#include <RmlUi/Core.h>
 #include <aurora/rmlui.hpp>
 #include <imgui.h>
-#include <RmlUi/Core.h>
+#include <nlohmann/json.hpp>
 
 #include <cmath>
 
@@ -72,6 +74,49 @@ MenuBar::MenuBar()
 
 void MenuBar::build_tabs() {
     mTabBar->add_tab("Settings", [this] { push(std::make_unique<SettingsWindow>()); });
+
+    mTabBar->add_tab("Channel", [this] {
+        mTabBar->set_active_tab(-1);
+        const auto status = nlohmann::json::parse(channels::status_json(), nullptr, false);
+        std::string body = "Current channel status is unavailable.";
+        if (status.is_object() && status.contains("channel") && status["channel"].is_string() &&
+            status.contains("generation") && status["generation"].is_number_unsigned())
+        {
+            body = "Current channel: " + status["channel"].get<std::string>() + " (generation " +
+                   status["generation"].dump() + ").";
+        }
+        body += "\nSelect a channel to apply its settings without restarting the game.";
+        std::vector<ModalAction> actions;
+        actions.push_back(ModalAction{
+            .label = "Cancel",
+            .onPressed =
+                [](Modal& modal) {
+                    mDoAud_seStartMenu(kSoundWindowClose);
+                    modal.pop();
+                },
+        });
+        for (const auto& name : channels::names()) {
+            actions.push_back(ModalAction{
+                .label = "Switch to " + name,
+                .onPressed =
+                    [name](Modal& modal) {
+                        std::string error;
+                        if (!channels::request(name, error)) {
+                            modal.set_body_text("Could not switch channel: " + error);
+                            return;
+                        }
+                        mDoAud_seStartMenu(kSoundClick);
+                        modal.pop();
+                    },
+            });
+        }
+        push(std::make_unique<Modal>(Modal::Props{
+            .title = "Channel",
+            .bodyText = body,
+            .actions = std::move(actions),
+            .onDismiss = [](Modal& modal) { modal.pop(); },
+        }));
+    });
 
     if (getSettings().backend.enableAdvancedSettings) {
         mTabBar->add_tab("Warp", [this] { push(std::make_unique<WarpWindow>()); });
