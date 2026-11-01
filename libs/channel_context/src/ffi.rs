@@ -204,6 +204,23 @@ mod tests {
     use super::*;
 
     #[test]
+    fn ffi_rejects_duplicate_catalog_keys() {
+        let catalog = CString::new(
+            r#"{"schemaVersion":1,"defaultChannel":"x","collections":{},"channels":{"x":{"features":{"enabled":true,"enabled":false}}}}"#,
+        ).unwrap();
+        unsafe {
+            let runtime = cc_runtime_create(catalog.as_ptr(), ptr::null());
+            let rejected = runtime.is_null();
+            cc_runtime_destroy(runtime);
+            assert!(rejected);
+            assert!(CStr::from_ptr(cc_last_error())
+                .to_str()
+                .unwrap()
+                .contains("duplicate JSON key: enabled"));
+        }
+    }
+
+    #[test]
     fn ffi_handles_preserve_borrowed_data_and_reject_stale_commits() {
         let catalog = CString::new(include_str!("../../../config/channels.json")).unwrap();
         let lab = CString::new("lab").unwrap();

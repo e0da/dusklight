@@ -5,6 +5,21 @@ use std::sync::Arc;
 const CATALOG: &str = include_str!("../../../config/channels.json");
 
 #[test]
+fn rejects_duplicate_keys_at_every_catalog_depth() {
+    for raw in [
+        r#"{"schemaVersion":1,"schemaVersion":1,"defaultChannel":"x","collections":{},"channels":{"x":{}}}"#,
+        r#"{"schemaVersion":1,"defaultChannel":"x","collections":{},"channels":{"x":{},"x":{}}}"#,
+        r#"{"schemaVersion":1,"defaultChannel":"x","collections":{"base":{},"base":{}},"channels":{"x":{}}}"#,
+        r#"{"schemaVersion":1,"defaultChannel":"x","collections":{},"channels":{"x":{"features":{"enabled":true,"enabled":false}}}}"#,
+        r#"{"schemaVersion":1,"defaultChannel":"x","collections":{},"channels":{"x":{"values":[{"flag":1,"flag":2}]}}}"#,
+        r#"{"schemaVersion":1,"defaultChannel":"x","collections":{},"channels":{"x":{"features":{"flag":true,"\u0066lag":false}}}}"#,
+    ] {
+        let error = Catalog::from_json(raw).unwrap_err();
+        assert!(error.contains("duplicate"), "{error}");
+    }
+}
+
+#[test]
 fn tracked_default_and_all_channels_share_the_same_resolver() {
     let catalog = Catalog::from_json(CATALOG).unwrap();
     let play = catalog.resolve(None).unwrap();

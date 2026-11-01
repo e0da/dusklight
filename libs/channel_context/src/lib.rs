@@ -4,6 +4,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
 
 mod ffi;
+mod unique_json;
 
 pub type Result<T> = std::result::Result<T, String>;
 
@@ -74,6 +75,7 @@ fn resolve_collection(
 
 impl Catalog {
     pub fn from_json(json: &str) -> Result<Self> {
+        unique_json::validate(json).map_err(|error| error.to_string())?;
         let input: CatalogInput = serde_json::from_str(json).map_err(|error| error.to_string())?;
         if input.schema_version != 1 {
             return Err(format!(
