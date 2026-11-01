@@ -5,6 +5,19 @@ channel catalog, default selection, inherited collections, application identity,
 tooling configuration, and hierarchical feature objects. Play and Lab are runtime
 contexts; `main` remains an integration branch.
 
+## Configuration format
+
+Prefer TOML for human-authored configuration, including feature collections and
+channel declarations. Use JSON for generated manifests, resolved snapshots, and
+debug transport messages where machine interchange is the primary purpose.
+Normalize authored configuration through the canonical Rust resolver so tooling
+and runtime share validation and inheritance semantics.
+
+The current catalog is still JSON; TOML loading and catalog migration are follow-up
+work. Existing commands and artifact contracts below describe the implemented JSON
+format. When adding TOML support, use tables for nested feature paths and quoted
+keys when a literal identifier contains dots.
+
 The Rust crate in `libs/channel_context` is the canonical resolver used by both the
 application and the Python tooling wrapper. Collections merge left to right, then
 the child deep-overrides objects. Scalars and arrays replace inherited values.
