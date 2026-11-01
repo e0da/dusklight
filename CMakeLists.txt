@@ -97,6 +97,7 @@ option(DUSK_SELECTED_OPT "If on, selected parts of the project will be compiled 
 option(DUSK_PACKAGE_INSTALL "Install Dusklight with a Linux-native file structure" OFF)
 option(DUSK_GFX_DEBUG_GROUPS "Report debug groups to the native graphics API" ${DUSK_GFX_DEBUG_GROUPS_DEFAULT})
 option(DUSK_ENABLE_CODE_MODS "Enable code mods" ON)
+option(DUSK_ENABLE_LIVE_DEBUG "Enable the opt-in development WebSocket bridge" OFF)
 option(DUSK_ENABLE_OPUS "Enable loading Opus audio files for mods" OFF)
 
 
@@ -282,6 +283,7 @@ include(cmake/GameABIConfig.cmake)
 
 find_package(Threads REQUIRED)
 set(GAME_COMPILE_DEFS DUSK_BUILDING_GAME=1)
+list(APPEND GAME_COMPILE_DEFS DUSK_ENABLE_LIVE_DEBUG=$<BOOL:${DUSK_ENABLE_LIVE_DEBUG}>)
 set(GAME_LIBS aurora::core aurora::gx aurora::gd aurora::si aurora::vi aurora::pad aurora::mtx aurora::os aurora::dvd aurora::thp
     aurora::card borealis::http borealis::cli borealis::crash borealis::data borealis::disc borealis::discord borealis::file_select borealis::io borealis::log borealis::net borealis::presentation borealis::sentry borealis::update borealis::ws freeverb cxxopts::cxxopts absl::flat_hash_map nlohmann_json::nlohmann_json TracyClient fmt::fmt
     Threads::Threads zstd::libzstd dusklight_game_headers picosha2 PNG::PNG)
@@ -365,6 +367,16 @@ set(GAME_FILES ${_dusklight_all_files})
 list(FILTER GAME_FILES EXCLUDE REGEX "^src/dusk/")
 
 add_library(dusk_internal OBJECT ${DUSK_INTERNAL_FILES})
+if (DUSK_ENABLE_LIVE_DEBUG)
+    target_sources(dusk_internal PRIVATE src/dusk/live_debug.cpp)
+    if (NOT CMAKE_CROSSCOMPILING AND NOT WIN32)
+        add_executable(dusk_live_debug_test EXCLUDE_FROM_ALL
+            src/dusk/live_debug.cpp tests/test_live_debug_bridge.cpp)
+        target_link_libraries(dusk_live_debug_test PRIVATE dusklight_game_headers
+            borealis::core fmt::fmt nlohmann_json::nlohmann_json SDL3::Headers)
+        target_compile_options(dusk_live_debug_test PRIVATE -include global.h -UNDEBUG)
+    endif ()
+endif ()
 if (ENABLE_ASAN)
     target_sources(dusk_internal PRIVATE src/dusk/asan_options.c)
 endif ()
