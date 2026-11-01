@@ -8,6 +8,7 @@
 
 #include <cassert>
 #include <cstdlib>
+#include <deque>
 #include <string>
 #include <utility>
 #include <vector>
@@ -18,6 +19,31 @@ bool connected = false;
 bool openPending = false;
 uint64_t nowNs = 1;
 std::vector<std::string> sent;
+std::deque<borealis::ws::Event> incoming;
+unsigned commandCalls = 0;
+bool sendQueueFull = false;
+
+void enqueue(std::string message) {
+    borealis::ws::Event event;
+    event.kind = borealis::ws::Event::Kind::Message;
+    event.messageKind = borealis::ws::MessageKind::Text;
+    event.data = std::move(message);
+    incoming.push_back(std::move(event));
+}
+
+nlohmann::json request(std::string message, bool gameReady = false) {
+    sent.clear();
+    enqueue(std::move(message));
+    dusk::live_debug::poll(gameReady);
+    assert(!sent.empty());
+    return nlohmann::json::parse(sent.front());
+}
+
+void expect_error(std::string message, const char* code, bool gameReady = false) {
+    const auto response = request(std::move(message), gameReady);
+    assert(response["type"] == "response");
+    assert(response["error"]["code"] == code);
+}
 }  // namespace
 
 Uint64 SDL_GetTicksNS() {
@@ -35,19 +61,29 @@ Connection::State Connection::state() const noexcept {
     return connected ? State::Open : State::Closed;
 }
 bool Connection::poll(Event& event) {
-    if (!std::exchange(openPending, false)) {
-        return false;
+    if (std::exchange(openPending, false)) {
+        event.kind = Event::Kind::Open;
+        return true;
     }
-    event.kind = Event::Kind::Open;
-    return true;
+    if (!incoming.empty()) {
+        event = std::move(incoming.front());
+        incoming.pop_front();
+        return true;
+    }
+    return false;
 }
 SendResult Connection::send(MessageKind, std::string_view data) {
+    if (sendQueueFull) {
+        return SendResult::QueueFull;
+    }
+    assert(data.size() <= 16 * 1024);
     sent.emplace_back(data);
     return SendResult::Ok;
 }
 CloseResult Connection::close(uint16_t, std::string_view) {
     connected = false;
     openPending = false;
+    incoming.clear();
     return CloseResult::Ok;
 }
 Connection connect(Options options) {
@@ -71,8 +107,20 @@ void write(borealis::LogLevel, std::string_view, std::string_view) {}
 }  // namespace borealis::log::detail
 
 namespace dusk {
-void runCommand(std::string_view, CommandState&, const CommandOutput&) {
-    std::abort();
+void runCommand(std::string_view line, CommandState&, const CommandOutput& output) {
+    ++commandCalls;
+    if (line == "many") {
+        for (unsigned index = 0; index < 200; ++index) {
+            output("line");
+        }
+    } else if (line == "large") {
+        output(std::string(2000, '\x01'));
+        output(std::string(1000, 'x'));
+    } else {
+        assert(line == "test");
+        output("first line");
+        output("second line");
+    }
 }
 namespace game_clock {
 float get_sim_rate() {
@@ -112,6 +160,83 @@ int main() {
     dusk::live_debug::poll(false);
     assert(connectCalls == 1);
     assert(sent.size() == 1);
+
+    auto response = request(R"({"id":"ping-1","method":"ping"})");
+    assert(response["id"] == "ping-1");
+    assert(response["result"]["pong"] == true);
+    expect_error("{", "invalid_request");
+    expect_error(R"({"id":"bad","method":7})", "invalid_request");
+    expect_error(R"({"id":"bad","method":"ping","params":[]})", "invalid_request");
+    expect_error(R"({"id":"unknown","method":"missing"})", "unknown_method");
+    expect_error(R"({"id":"command","method":"command","params":{"line":"test"}})", "not_ready");
+    assert(commandCalls == 0);
+    expect_error(
+        R"({"id":"bad","method":"command","params":{"line":false}})", "invalid_params", true);
+    response = request(R"({"id":"command-ok","method":"command","params":{"line":"test"}})", true);
+    assert(response["id"] == "command-ok");
+    assert(response["result"]["completed"] == true);
+    assert(response["result"]["truncated"] == false);
+    assert(response["result"]["lines"] == nlohmann::json::array({"first line", "second line"}));
+    response = request(R"({"id":"many","method":"command","params":{"line":"many"}})", true);
+    assert(response["result"]["truncated"] == true);
+    assert(response["result"]["lines"].size() == 128);
+    response = request(R"({"id":"large","method":"command","params":{"line":"large"}})", true);
+    assert(response["result"]["truncated"] == true);
+    assert(response["result"]["lines"].size() == 1);
+    assert(commandCalls == 3);
+
+    expect_error(R"({"id":"bad-rate","method":"subscribe","params":{"hz":11}})", "invalid_params");
+    expect_error(R"({"id":"bad-rate","method":"subscribe","params":{"hz":0}})", "invalid_params");
+    response = request(R"({"id":"sub","method":"subscribe","params":{"hz":10}})");
+    assert(response["result"]["subscribed"] == true);
+    assert(response["result"]["hz"] == 10);
+    assert(sent.size() == 2);
+    auto telemetry = nlohmann::json::parse(sent.back());
+    assert(telemetry["event"] == "telemetry");
+    assert(telemetry["data"]["gameReady"] == false);
+    assert(!telemetry["data"].contains("player"));
+    sent.clear();
+    nowNs += 99'000'000;
+    dusk::live_debug::poll(true);
+    assert(sent.empty());
+    nowNs += 1'000'000;
+    dusk::live_debug::poll(true);
+    assert(sent.size() == 1);
+    telemetry = nlohmann::json::parse(sent.back());
+    assert(telemetry["seq"] == 2);
+    assert(telemetry["data"]["gameReady"] == true);
+    assert(telemetry["data"]["simRate"] == 30);
+    sendQueueFull = true;
+    nowNs += 100'000'000;
+    dusk::live_debug::poll(true);
+    assert(connected);
+    sendQueueFull = false;
+    nowNs += 100'000'000;
+    dusk::live_debug::poll(true);
+    telemetry = nlohmann::json::parse(sent.back());
+    assert(telemetry["seq"] == 4);
+    assert(telemetry["dropped"] == 1);
+    response = request(R"({"id":"unsub","method":"unsubscribe"})");
+    assert(response["result"]["subscribed"] == false);
+    sent.clear();
+    nowNs += 1'000'000'000;
+    dusk::live_debug::poll(false);
+    assert(sent.empty());
+
+    for (unsigned index = 0; index < 7; ++index) {
+        enqueue(R"({"id":"queued","method":"ping"})");
+    }
+    dusk::live_debug::poll(false);
+    assert(sent.size() == 4);
+    assert(incoming.size() == 3);
+    dusk::live_debug::poll(false);
+    assert(sent.size() == 7);
+    assert(incoming.empty());
+    sendQueueFull = true;
+    enqueue(R"({"id":"full","method":"ping"})");
+    dusk::live_debug::poll(false);
+    assert(!connected);
+    sendQueueFull = false;
     dusk::live_debug::shutdown();
     dusk::live_debug::poll(false);
     assert(connectCalls == 1);
