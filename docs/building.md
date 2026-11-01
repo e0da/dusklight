@@ -56,6 +56,21 @@ The tvOS preset is experimental; its CI matrix entry is currently disabled.
 Device pairing, signing, game-file transfer, and persistent saves still need
 device validation. The Brewfile does not configure those steps.
 
+The preset disables Dawn's optional Protobuf and Tint IR binary support, avoiding
+the need for a matching host `protoc` during cross-compilation. Metal rendering
+remains enabled. For initial device bring-up, configure without native mods and
+use a bundle identifier provisioned by your development team:
+
+```sh
+cmake --preset tvos-default -DDUSK_ENABLE_CODE_MODS=OFF \
+  -DDUSK_BUNDLE_IDENTIFIER=dev.example.dusklight
+cmake --build --preset tvos-default
+```
+
+This produces a build, not a provisioned installation. Full Xcode must have a
+developer account and a tvOS development profile for the chosen bundle identifier.
+For live inspection and control, see [live-debug.md](live-debug.md).
+
 Recommended IDEs:
 
 * [Xcode 16.4 or later](https://developer.apple.com/xcode/)

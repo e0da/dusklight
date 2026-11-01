@@ -334,6 +334,14 @@
         "relwithdebinfo"
       ],
       "cacheVariables": {
+        "DAWN_BUILD_PROTOBUF": {
+          "type": "BOOL",
+          "value": false
+        },
+        "TINT_BUILD_IR_BINARY": {
+          "type": "BOOL",
+          "value": false
+        },
         "CMAKE_TOOLCHAIN_FILE": "ios.toolchain.cmake",
         "CMAKE_INSTALL_PREFIX": "${sourceDir}/build/install",
         "PLATFORM": "TVOS",
