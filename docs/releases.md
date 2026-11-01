@@ -5,7 +5,7 @@ Play and Lab select releases explicitly. Integrating a change into `main` does n
 There are two separate files:
 
 - `config/channels.json` defines the Play and Lab contexts, their inherited collections, app identities, features, and tooling. Each commit carries its own catalog. The catalog at a release tag is the authority for that release.
-- `releases/channels.json` selects a recorded version for each release channel. A `null` pointer means no version has been chosen. This repository starts with both pointers unset.
+- `releases/channels.json` selects a recorded version for each release channel. A `null` pointer means no version has been chosen. This repository starts with both pointers unset. Channel names come from each tagged catalog; Play and Lab are the initial choices, not a fixed list. Promotion can add a new catalog-defined channel while preserving existing pointers.
 
 Runtime context selection and callbacks use the catalog. The release pointer file is bookkeeping for explicit version promotion; it does not alter a running app or replace the runtime catalog.
 

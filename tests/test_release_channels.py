@@ -104,6 +104,38 @@ class ReleaseTests(unittest.TestCase):
             releases.promote(self.repo, "lab", self.tag)
         self.assertIsNone(releases.load_pointers(self.repo)["channels"]["lab"])
 
+    def test_catalog_can_add_a_third_channel_through_cli(self):
+        self.write(releases.CATALOG, {
+            "schemaVersion": 1, "channels": {"play": {}, "lab": {}, "preview_2": {}},
+        })
+        self.commit = self.save("add preview channel")
+        self.tag = "midna/v2.1.0"
+        self.git("tag", "-a", self.tag, "-m", "Preview release")
+        record = self.prepare()
+        before = releases.promote(self.repo, "play", self.tag)
+        result = subprocess.check_output([
+            "python3", str(Path(releases.__file__)), "--repo", str(self.repo),
+            "promote", "--channel", "preview_2", "--tag", self.tag,
+        ])
+        pointers = json.loads(result)["channels"]
+        self.assertEqual(pointers["play"], before["channels"]["play"])
+        self.assertIsNone(pointers["lab"])
+        self.assertEqual(pointers["preview_2"], {
+            key: record[key] for key in ("tag", "commit", "catalogBlobSha")
+        })
+        self.assertEqual(releases.load_pointers(self.repo)["channels"], pointers)
+
+    def test_unknown_or_unsafe_channel_cannot_change_pointers(self):
+        self.prepare()
+        before = (self.repo / releases.POINTERS).read_bytes()
+        for channel in ("preview", "", "../play", "play lab", "play\n"):
+            with self.subTest(channel=channel), self.assertRaises(ValueError):
+                releases.promote(self.repo, channel, self.tag)
+        self.assertEqual(before, (self.repo / releases.POINTERS).read_bytes())
+        self.write(releases.POINTERS, {"schemaVersion": 1, "channels": {"": None}})
+        with self.assertRaises(ValueError):
+            releases.load_pointers(self.repo)
+
     def test_moved_tag_rejected_by_prepare_and_promote(self):
         self.prepare()
         self.write("another.json", {})
@@ -147,7 +179,7 @@ class ReleaseTests(unittest.TestCase):
         self.write(str(releases.record_path(self.repo, self.tag).relative_to(self.repo)), [])
         with self.assertRaises(ValueError):
             releases.promote(self.repo, "play", self.tag)
-        self.write(releases.POINTERS, {"schemaVersion": 1, "channels": {"play": None}})
+        self.write(releases.POINTERS, {"schemaVersion": 1, "channels": []})
         with self.assertRaises(ValueError):
             releases.load_pointers(self.repo)
 

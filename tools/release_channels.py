@@ -13,7 +13,6 @@ from urllib.parse import quote
 
 CATALOG = "config/channels.json"
 POINTERS = "releases/channels.json"
-CHANNELS = ("play", "lab")
 NUMBER = r"(?:0|[1-9][0-9]*)"
 IDENTIFIER = r"(?:0|[1-9][0-9]*|[0-9]*[A-Za-z-][0-9A-Za-z-]*)"
 TAG_PATTERN = re.compile(
@@ -35,6 +34,11 @@ def git(repo, *args):
 def validate_tag(tag):
     if not isinstance(tag, str) or not TAG_PATTERN.fullmatch(tag):
         raise ValueError("tag must be midna/vSEMVER, for example midna/v0.2.0")
+
+
+def validate_channel(channel):
+    if not isinstance(channel, str) or not re.fullmatch(r"[A-Za-z0-9_-]+", channel):
+        raise ValueError("channel must be a nonempty identifier using letters, digits, _ or -")
 
 
 def record_path(repo, tag):
@@ -109,10 +113,10 @@ def prepare(repo, tag, commit, artifact_metadata=None):
 def load_pointers(repo):
     pointers = read_json(Path(repo) / POINTERS)
     if (not isinstance(pointers, dict) or type(pointers.get("schemaVersion")) is not int
-            or pointers["schemaVersion"] != 1 or not isinstance(pointers.get("channels"), dict)
-            or set(pointers["channels"]) != set(CHANNELS)):
-        raise ValueError("channel pointers must contain schemaVersion 1 and play/lab")
-    for entry in pointers["channels"].values():
+            or pointers["schemaVersion"] != 1 or not isinstance(pointers.get("channels"), dict)):
+        raise ValueError("channel pointers must contain schemaVersion 1 and a channels object")
+    for channel, entry in pointers["channels"].items():
+        validate_channel(channel)
         if entry is None:
             continue
         if not isinstance(entry, dict) or set(entry) != {"tag", "commit", "catalogBlobSha"}:
@@ -126,8 +130,7 @@ def load_pointers(repo):
 
 
 def promote(repo, channel, tag):
-    if channel not in CHANNELS:
-        raise ValueError("channel must be play or lab")
+    validate_channel(channel)
     record = read_json(record_path(repo, tag))
     keys = {"schemaVersion", "tag", "commit", "tagObjectSha", "catalogPath",
             "catalogBlobSha", "artifactMetadata"}
@@ -158,7 +161,7 @@ def main():
     selected.add_argument("--commit", required=True)
     selected.add_argument("--artifact-metadata", type=Path, help="optional JSON object file")
     promoted = commands.add_parser("promote", help="explicitly update a tracked channel pointer")
-    promoted.add_argument("--channel", choices=CHANNELS, required=True)
+    promoted.add_argument("--channel", required=True, help="channel defined in the recorded release catalog")
     promoted.add_argument("--tag", required=True)
     commands.add_parser("status", help="show selected release channel pointers")
     args = parser.parse_args()
