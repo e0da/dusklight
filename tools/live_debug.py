@@ -3,11 +3,13 @@
 
 import argparse
 import asyncio
+import concurrent.futures
 import hmac
 import json
 import os
 import secrets
 import sys
+import threading
 from http import HTTPStatus
 
 from websockets.asyncio.server import serve
@@ -171,6 +173,66 @@ class Workbench:
             self.pending.pop(request_id, None)
 
 
+async def stdin_lines():
+    """Read bounded lines from a terminal, pipe, or file without blocking asyncio."""
+    loop = asyncio.get_running_loop()
+    queue = asyncio.Queue(maxsize=1)
+    lock = threading.Lock()
+    stopped = False
+    pending = None
+    descriptor = sys.stdin.fileno()
+
+    def read():
+        nonlocal pending
+        while True:
+            try:
+                chunk = os.read(descriptor, 4096)
+            except OSError as error:
+                chunk = error
+            with lock:
+                if stopped:
+                    return
+                pending = asyncio.run_coroutine_threadsafe(queue.put(chunk), loop)
+                delivery = pending
+            try:
+                delivery.result()
+            except (concurrent.futures.CancelledError, RuntimeError):
+                return
+            if not chunk or isinstance(chunk, OSError):
+                return
+
+    threading.Thread(target=read, daemon=True, name="live-debug-stdin").start()
+    buffer = bytearray()
+    oversized = False
+    try:
+        while True:
+            chunk = await queue.get()
+            if isinstance(chunk, OSError):
+                raise chunk
+            if not chunk:
+                if oversized:
+                    yield None
+                elif buffer:
+                    yield bytes(buffer)
+                return
+            pieces = chunk.split(b"\n")
+            for index, piece in enumerate(pieces):
+                if not oversized:
+                    buffer.extend(piece)
+                    if len(buffer) > 8192:
+                        oversized = True
+                        buffer.clear()
+                if index < len(pieces) - 1:
+                    yield None if oversized else bytes(buffer)
+                    buffer.clear()
+                    oversized = False
+    finally:
+        with lock:
+            stopped = True
+            if pending is not None:
+                pending.cancel()
+
+
 async def console(workbench, args):
     await asyncio.wait_for(workbench.ready.wait(), args.wait)
     print("App connected", file=sys.stderr)
@@ -181,19 +243,17 @@ async def console(workbench, args):
     if args.command and not args.subscribe:
         return
     print("Enter a game command, /ping, /subscribe HZ, /unsubscribe, or /quit", file=sys.stderr)
-    reader = asyncio.StreamReader(limit=8192)
-    protocol = asyncio.StreamReaderProtocol(reader)
-    transport, _ = await asyncio.get_running_loop().connect_read_pipe(lambda: protocol, sys.stdin)
+    reader = stdin_lines()
     try:
-        while True:
-            try:
-                raw = await reader.readline()
-            except ValueError:
+        async for raw in reader:
+            if raw is None:
                 print("Input line too long", file=sys.stderr)
                 continue
-            if not raw:
-                return
-            line = raw.decode("utf-8").strip()
+            try:
+                line = raw.decode("utf-8").strip()
+            except UnicodeDecodeError:
+                print("Input must be UTF-8", file=sys.stderr)
+                continue
             if not line:
                 continue
             if line == "/quit":
@@ -211,7 +271,7 @@ async def console(workbench, args):
             except (ValueError, RemoteError, ConnectionError, ConnectionClosed, asyncio.TimeoutError) as error:
                 print(str(error) or "request timed out", file=sys.stderr)
     finally:
-        transport.close()
+        await reader.aclose()
 
 
 async def run(args):

@@ -1,6 +1,11 @@
 import asyncio
 import importlib.util
 import json
+import os
+import pty
+import signal
+import socket
+import sys
 from pathlib import Path
 import tempfile
 import unittest
@@ -130,6 +135,75 @@ class WorkbenchTests(unittest.IsolatedAsyncioTestCase):
             recorder.close()
             self.assertLessEqual(path.stat().st_size, 15)
             self.assertEqual(path.stat().st_mode & 0o777, 0o600)
+
+
+class ConsoleTests(unittest.IsolatedAsyncioTestCase):
+    async def exercise_console(self, terminal, exit_mode):
+        with socket.socket() as reservation:
+            reservation.bind(("127.0.0.1", 0))
+            port = reservation.getsockname()[1]
+        master = slave = None
+        if terminal:
+            master, slave = pty.openpty()
+        process = await asyncio.create_subprocess_exec(
+            sys.executable, str(Path(__file__).resolve().parents[1] / "tools/live_debug.py"),
+            "--port", str(port), "--wait", "5",
+            env={**os.environ, "DUSK_DEBUG_TOKEN": "console-secret"},
+            stdin=slave if terminal else asyncio.subprocess.PIPE,
+            stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE,
+        )
+        if slave is not None:
+            os.close(slave)
+        try:
+            listening = await asyncio.wait_for(process.stderr.readline(), 5)
+            self.assertIn(b"Listening", listening)
+            async with connect(f"ws://127.0.0.1:{port}", additional_headers={"Authorization": "Bearer console-secret"}) as app:
+                await app.send('{"type":"hello","version":1}')
+                self.assertIn(b"App connected", await asyncio.wait_for(process.stderr.readline(), 2))
+                self.assertIn(b"Enter a game command", await asyncio.wait_for(process.stderr.readline(), 2))
+                # A blocked stdin reader must not stall the WebSocket receive task.
+                await app.send(json.dumps({"type": "event", "event": "telemetry", "seq": 1, "dropped": 0, "data": {"frame": 123}}))
+                event = json.loads(await asyncio.wait_for(process.stdout.readline(), 2))
+                self.assertEqual(event["data"]["frame"], 123)
+                if terminal:
+                    os.write(master, b"/ping\n")
+                else:
+                    process.stdin.write(b"x" * 20000 + b"\n/ping\n")
+                    await process.stdin.drain()
+                    self.assertIn(b"Input line too long", await asyncio.wait_for(process.stderr.readline(), 2))
+                request = json.loads(await asyncio.wait_for(app.recv(), 2))
+                self.assertEqual(request["method"], "ping")
+                await app.send(json.dumps({"type": "response", "id": request["id"], "result": {"pong": True}}))
+                self.assertEqual(json.loads(await asyncio.wait_for(process.stdout.readline(), 2)), {"pong": True})
+                if exit_mode == "interrupt":
+                    process.send_signal(signal.SIGINT)
+                elif exit_mode == "eof":
+                    if terminal:
+                        os.write(master, b"\x04")
+                    else:
+                        process.stdin.close()
+                else:
+                    os.write(master, b"/quit\n")
+                self.assertEqual(await asyncio.wait_for(process.wait(), 3), 0)
+                self.assertEqual(await process.stderr.read(), b"")
+        finally:
+            if process.returncode is None:
+                process.kill()
+                await process.wait()
+            if master is not None:
+                os.close(master)
+
+    async def test_real_pty_ping_telemetry_and_quit(self):
+        await self.exercise_console(True, "quit")
+
+    async def test_real_pty_eof_exits(self):
+        await self.exercise_console(True, "eof")
+
+    async def test_real_pty_interrupt_exits_without_stdin(self):
+        await self.exercise_console(True, "interrupt")
+
+    async def test_pipe_long_line_recovers_and_eof_exits(self):
+        await self.exercise_console(False, "eof")
 
 
 if __name__ == "__main__":
